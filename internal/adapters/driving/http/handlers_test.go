@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driving"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driving"
 )
 
 // Mock services for testing
@@ -61,11 +61,13 @@ func (m *mockAuthService) ChangePassword(ctx context.Context, userID string, req
 }
 
 type mockUserService struct {
-	setupFn  func(ctx context.Context, req driving.SetupRequest) (*driving.SetupResponse, error)
-	createFn func(ctx context.Context, req driving.CreateUserRequest) (*domain.User, error)
-	getFn    func(ctx context.Context, id string) (*domain.User, error)
-	listFn   func(ctx context.Context) ([]*domain.User, error)
-	deleteFn func(ctx context.Context, id string) error
+	setupFn       func(ctx context.Context, req driving.SetupRequest) (*driving.SetupResponse, error)
+	createFn      func(ctx context.Context, req driving.CreateUserRequest) (*domain.User, error)
+	getFn         func(ctx context.Context, id string) (*domain.User, error)
+	listFn        func(ctx context.Context) ([]*domain.User, error)
+	updateFn      func(ctx context.Context, id string, req driving.UpdateUserRequest) (*domain.User, error)
+	deleteFn      func(ctx context.Context, id string) error
+	setPasswordFn func(ctx context.Context, id string, password string) error
 }
 
 func (m *mockUserService) Setup(ctx context.Context, req driving.SetupRequest) (*driving.SetupResponse, error) {
@@ -101,6 +103,9 @@ func (m *mockUserService) List(ctx context.Context) ([]*domain.User, error) {
 }
 
 func (m *mockUserService) Update(ctx context.Context, id string, req driving.UpdateUserRequest) (*domain.User, error) {
+	if m.updateFn != nil {
+		return m.updateFn(ctx, id, req)
+	}
 	return nil, errors.New("not implemented")
 }
 
@@ -112,6 +117,9 @@ func (m *mockUserService) Delete(ctx context.Context, id string) error {
 }
 
 func (m *mockUserService) SetPassword(ctx context.Context, id string, password string) error {
+	if m.setPasswordFn != nil {
+		return m.setPasswordFn(ctx, id, password)
+	}
 	return nil
 }
 
@@ -130,15 +138,12 @@ func (m *mockSearchService) SearchBySource(ctx context.Context, sourceID string,
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockSearchService) Suggest(ctx context.Context, prefix string, limit int) ([]domain.SearchSuggestion, error) {
-	return nil, errors.New("not implemented")
-}
-
 type mockSourceService struct {
-	createFn          func(ctx context.Context, creatorID string, req driving.CreateSourceRequest) (*domain.Source, error)
-	getFn             func(ctx context.Context, id string) (*domain.Source, error)
-	listWithSummaryFn func(ctx context.Context) ([]*domain.SourceSummary, error)
-	deleteFn          func(ctx context.Context, id string) error
+	createFn           func(ctx context.Context, creatorID string, req driving.CreateSourceRequest) (*domain.Source, error)
+	getFn              func(ctx context.Context, id string) (*domain.Source, error)
+	listWithSummaryFn  func(ctx context.Context) ([]*domain.SourceSummary, error)
+	listByConnectionFn func(ctx context.Context, connectionID string) ([]*domain.Source, error)
+	deleteFn           func(ctx context.Context, id string) error
 }
 
 func (m *mockSourceService) Create(ctx context.Context, creatorID string, req driving.CreateSourceRequest) (*domain.Source, error) {
@@ -156,6 +161,13 @@ func (m *mockSourceService) Get(ctx context.Context, id string) (*domain.Source,
 }
 
 func (m *mockSourceService) List(ctx context.Context) ([]*domain.Source, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockSourceService) ListByConnection(ctx context.Context, connectionID string) ([]*domain.Source, error) {
+	if m.listByConnectionFn != nil {
+		return m.listByConnectionFn(ctx, connectionID)
+	}
 	return nil, errors.New("not implemented")
 }
 
@@ -185,15 +197,74 @@ func (m *mockSourceService) Disable(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *mockSourceService) UpdateSelection(ctx context.Context, id string, containers []string) error {
+func (m *mockSourceService) UpdateContainers(ctx context.Context, id string, containers []domain.Container) error {
 	return nil
 }
 
+type mockConnectionService struct {
+	getFn             func(ctx context.Context, id string) (*domain.ConnectionSummary, error)
+	listFn            func(ctx context.Context) ([]*domain.ConnectionSummary, error)
+	createFn          func(ctx context.Context, req driving.CreateConnectionRequest) (*domain.ConnectionSummary, error)
+	deleteFn          func(ctx context.Context, id string) error
+	listContainersFn  func(ctx context.Context, id string, cursor string) (*driving.ListContainersResponse, error)
+	testConnectionFn  func(ctx context.Context, id string) error
+}
+
+func (m *mockConnectionService) Create(ctx context.Context, req driving.CreateConnectionRequest) (*domain.ConnectionSummary, error) {
+	if m.createFn != nil {
+		return m.createFn(ctx, req)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockConnectionService) Get(ctx context.Context, id string) (*domain.ConnectionSummary, error) {
+	if m.getFn != nil {
+		return m.getFn(ctx, id)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockConnectionService) List(ctx context.Context) ([]*domain.ConnectionSummary, error) {
+	if m.listFn != nil {
+		return m.listFn(ctx)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockConnectionService) Delete(ctx context.Context, id string) error {
+	if m.deleteFn != nil {
+		return m.deleteFn(ctx, id)
+	}
+	return errors.New("not implemented")
+}
+
+func (m *mockConnectionService) ListContainers(ctx context.Context, id string, cursor string) (*driving.ListContainersResponse, error) {
+	if m.listContainersFn != nil {
+		return m.listContainersFn(ctx, id, cursor)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockConnectionService) TestConnection(ctx context.Context, id string) error {
+	if m.testConnectionFn != nil {
+		return m.testConnectionFn(ctx, id)
+	}
+	return errors.New("not implemented")
+}
+
+func (m *mockConnectionService) ListByProvider(ctx context.Context, providerType domain.ProviderType) ([]*domain.ConnectionSummary, error) {
+	return nil, errors.New("not implemented")
+}
+
 type mockDocumentService struct {
+	getFn           func(ctx context.Context, id string) (*domain.Document, error)
 	getWithChunksFn func(ctx context.Context, id string) (*domain.DocumentWithChunks, error)
 }
 
 func (m *mockDocumentService) Get(ctx context.Context, id string) (*domain.Document, error) {
+	if m.getFn != nil {
+		return m.getFn(ctx, id)
+	}
 	return nil, errors.New("not implemented")
 }
 
@@ -227,6 +298,7 @@ type mockSettingsService struct {
 	updateAISettingsFn func(ctx context.Context, req driving.UpdateAISettingsRequest) (*driving.AISettingsStatus, error)
 	getAIStatusFn      func(ctx context.Context) (*driving.AISettingsStatus, error)
 	testConnectionFn   func(ctx context.Context) error
+	getAIProvidersFn   func(ctx context.Context) (*driving.AIProvidersResponse, error)
 }
 
 func (m *mockSettingsService) Get(ctx context.Context) (*domain.Settings, error) {
@@ -271,31 +343,58 @@ func (m *mockSettingsService) TestConnection(ctx context.Context) error {
 	return errors.New("not implemented")
 }
 
-type mockVespaAdminService struct {
-	connectFn     func(ctx context.Context, req driving.ConnectVespaRequest) (*driving.VespaStatus, error)
-	statusFn      func(ctx context.Context) (*driving.VespaStatus, error)
-	healthCheckFn func(ctx context.Context) error
-}
-
-func (m *mockVespaAdminService) Connect(ctx context.Context, req driving.ConnectVespaRequest) (*driving.VespaStatus, error) {
-	if m.connectFn != nil {
-		return m.connectFn(ctx, req)
+func (m *mockSettingsService) GetAIProviders(ctx context.Context) (*driving.AIProvidersResponse, error) {
+	if m.getAIProvidersFn != nil {
+		return m.getAIProvidersFn(ctx)
 	}
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockVespaAdminService) Status(ctx context.Context) (*driving.VespaStatus, error) {
-	if m.statusFn != nil {
-		return m.statusFn(ctx)
-	}
-	return nil, errors.New("not implemented")
+func (m *mockSettingsService) RestoreAIServices(ctx context.Context) error {
+	return nil
 }
 
-func (m *mockVespaAdminService) HealthCheck(ctx context.Context) error {
-	if m.healthCheckFn != nil {
-		return m.healthCheckFn(ctx)
+type mockCapabilitiesService struct {
+	getCapabilitiesFn           func(ctx context.Context, teamID string) (*driving.CapabilitiesResponse, error)
+	getCapabilityPreferencesFn  func(ctx context.Context, teamID string) (*domain.CapabilityPreferences, error)
+	updateCapabilityPreferencesFn func(ctx context.Context, teamID string, req driving.UpdateCapabilityPreferencesRequest) (*domain.CapabilityPreferences, error)
+}
+
+func (m *mockCapabilitiesService) GetCapabilities(ctx context.Context, teamID string) (*driving.CapabilitiesResponse, error) {
+	if m.getCapabilitiesFn != nil {
+		return m.getCapabilitiesFn(ctx, teamID)
 	}
-	return errors.New("not implemented")
+	return &driving.CapabilitiesResponse{
+		AIProviders: driving.AIProvidersCapability{
+			Embedding: []domain.AIProvider{domain.AIProviderOpenAI},
+			LLM:       []domain.AIProvider{domain.AIProviderOpenAI},
+		},
+	}, nil
+}
+
+func (m *mockCapabilitiesService) GetCapabilityPreferences(ctx context.Context, teamID string) (*domain.CapabilityPreferences, error) {
+	if m.getCapabilityPreferencesFn != nil {
+		return m.getCapabilityPreferencesFn(ctx, teamID)
+	}
+	return domain.DefaultCapabilityPreferences(teamID), nil
+}
+
+func (m *mockCapabilitiesService) UpdateCapabilityPreferences(ctx context.Context, teamID string, req driving.UpdateCapabilityPreferencesRequest) (*domain.CapabilityPreferences, error) {
+	if m.updateCapabilityPreferencesFn != nil {
+		return m.updateCapabilityPreferencesFn(ctx, teamID, req)
+	}
+	return domain.DefaultCapabilityPreferences(teamID), nil
+}
+
+type mockSetupService struct {
+	getStatusFn func(ctx context.Context) (*driving.SetupStatusResponse, error)
+}
+
+func (m *mockSetupService) GetStatus(ctx context.Context) (*driving.SetupStatusResponse, error) {
+	if m.getStatusFn != nil {
+		return m.getStatusFn(ctx)
+	}
+	return nil, errors.New("not implemented")
 }
 
 func TestHealthHandler(t *testing.T) {
@@ -316,39 +415,6 @@ func TestHealthHandler(t *testing.T) {
 	}
 	if response.Status != "healthy" {
 		t.Errorf("expected status 'healthy', got %s", response.Status)
-	}
-	if response.Components["server"].Status != "healthy" {
-		t.Errorf("expected server component to be healthy")
-	}
-}
-
-func TestHealthHandler_WithVespaUnhealthy(t *testing.T) {
-	mockVespa := &mockVespaAdminService{
-		healthCheckFn: func(ctx context.Context) error {
-			return errors.New("vespa not connected")
-		},
-	}
-	server := &Server{version: "test", vespaAdminService: mockVespa}
-
-	req := httptest.NewRequest("GET", "/health", nil)
-	rr := httptest.NewRecorder()
-
-	server.handleHealth(rr, req)
-
-	// Always returns 200 - service is up and can respond
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
-
-	var response HealthResponse
-	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	if response.Status != "degraded" {
-		t.Errorf("expected status 'degraded', got %s", response.Status)
-	}
-	if response.Components["vespa"].Status != "unhealthy" {
-		t.Errorf("expected vespa component to be unhealthy")
 	}
 	if response.Components["server"].Status != "healthy" {
 		t.Errorf("expected server component to be healthy")
@@ -1222,7 +1288,7 @@ func TestHandleSearch_Success(t *testing.T) {
 				TotalCount: 10,
 				Took:       50 * time.Millisecond,
 				Mode:       opts.Mode,
-				Results:    []*domain.RankedChunk{},
+				Results:    []*domain.SearchResultItem{},
 			}, nil
 		},
 	}
@@ -1654,6 +1720,14 @@ func (m *mockTaskQueue) Close() error {
 	return nil
 }
 
+func (m *mockTaskQueue) GetJobStats(ctx context.Context, teamID string, period domain.AnalyticsPeriod) (*domain.JobStats, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockTaskQueue) CountTasks(ctx context.Context, filter driven.TaskFilter) (int64, error) {
+	return 0, nil
+}
+
 func TestHandleTriggerSync_Success(t *testing.T) {
 	mockSource := &mockSourceService{
 		getFn: func(ctx context.Context, id string) (*domain.Source, error) {
@@ -1945,18 +2019,21 @@ func TestHandleGetAISettings_Success(t *testing.T) {
 				Embedding: domain.EmbeddingSettings{
 					Provider: domain.AIProviderOpenAI,
 					Model:    "text-embedding-3-small",
-					APIKey:   "secret-key",
 				},
 				LLM: domain.LLMSettings{
 					Provider: domain.AIProviderOpenAI,
 					Model:    "gpt-4",
-					APIKey:   "secret-key",
 				},
 			}, nil
 		},
 	}
 
-	server := &Server{settingsService: mockSettings}
+	mockCapabilities := &mockCapabilitiesService{}
+
+	server := &Server{
+		settingsService:      mockSettings,
+		capabilitiesService: mockCapabilities,
+	}
 
 	req := httptest.NewRequest("GET", "/api/v1/settings/ai", nil)
 	rr := httptest.NewRecorder()
@@ -2017,7 +2094,6 @@ func TestHandleUpdateAISettings_Success(t *testing.T) {
 		Embedding: &driving.EmbeddingSettingsInput{
 			Provider: domain.AIProviderOpenAI,
 			Model:    "text-embedding-3-small",
-			APIKey:   "test-key",
 		},
 	})
 	req := httptest.NewRequest("PUT", "/api/v1/settings/ai", bytes.NewBuffer(body))
@@ -2118,54 +2194,6 @@ func TestHandleGetAIStatus_Success(t *testing.T) {
 	}
 }
 
-func TestHandleGetAIStatus_WithVespaService(t *testing.T) {
-	mockSettings := &mockSettingsService{
-		getAIStatusFn: func(ctx context.Context) (*driving.AISettingsStatus, error) {
-			return &driving.AISettingsStatus{
-				Embedding: driving.AIServiceStatus{Available: true},
-				LLM:       driving.AIServiceStatus{Available: true},
-			}, nil
-		},
-	}
-
-	mockVespa := &mockVespaAdminService{
-		statusFn: func(ctx context.Context) (*driving.VespaStatus, error) {
-			return &driving.VespaStatus{
-				Connected:         true,
-				SchemaMode:        domain.VespacSchemaModeHybrid,
-				EmbeddingsEnabled: true,
-				EmbeddingDim:      384,
-				Healthy:           true,
-			}, nil
-		},
-	}
-
-	server := &Server{
-		settingsService:   mockSettings,
-		vespaAdminService: mockVespa,
-	}
-
-	req := httptest.NewRequest("GET", "/api/v1/settings/ai/status", nil)
-	rr := httptest.NewRecorder()
-
-	server.handleGetAIStatus(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
-
-	var response driving.AISettingsStatus
-	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	if !response.Vespa.Connected {
-		t.Error("expected Vespa to be connected")
-	}
-	if response.Vespa.EmbeddingDim != 384 {
-		t.Errorf("expected embedding dim 384, got %d", response.Vespa.EmbeddingDim)
-	}
-}
-
 func TestHandleTestAIConnection_Success(t *testing.T) {
 	mockSettings := &mockSettingsService{
 		testConnectionFn: func(ctx context.Context) error {
@@ -2204,176 +2232,1212 @@ func TestHandleTestAIConnection_Failure(t *testing.T) {
 	}
 }
 
-// Vespa Admin Handler Tests
+// Setup Handler Tests
 
-func TestHandleVespaConnect_Success(t *testing.T) {
-	mockVespa := &mockVespaAdminService{
-		connectFn: func(ctx context.Context, req driving.ConnectVespaRequest) (*driving.VespaStatus, error) {
-			return &driving.VespaStatus{
-				Connected:  true,
-				Endpoint:   "http://localhost:8080",
-				DevMode:    req.DevMode,
-				SchemaMode: domain.VespacSchemaModeBM25,
-				Healthy:    true,
+func TestHandleSetupStatus_Success(t *testing.T) {
+	mockSetup := &mockSetupService{
+		getStatusFn: func(ctx context.Context) (*driving.SetupStatusResponse, error) {
+			return &driving.SetupStatusResponse{
+				SetupComplete: true,
+				HasUsers:      true,
+				HasSources:    true,
 			}, nil
 		},
 	}
 
-	server := &Server{vespaAdminService: mockVespa}
+	server := &Server{setupService: mockSetup}
 
-	body, _ := json.Marshal(driving.ConnectVespaRequest{
-		Endpoint: "http://localhost:8080",
-		DevMode:  true,
-	})
-	req := httptest.NewRequest("POST", "/api/v1/admin/vespa/connect", bytes.NewBuffer(body))
+	req := httptest.NewRequest("GET", "/api/v1/setup/status", nil)
 	rr := httptest.NewRecorder()
 
-	server.handleVespaConnect(rr, req)
+	server.handleSetupStatus(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", rr.Code)
 	}
 
-	var response driving.VespaStatus
+	var response driving.SetupStatusResponse
 	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if !response.Connected {
-		t.Error("expected Vespa to be connected")
+
+	if !response.SetupComplete {
+		t.Error("expected setup to be complete")
+	}
+	if !response.HasUsers {
+		t.Error("expected HasUsers to be true")
+	}
+	if !response.HasSources {
+		t.Error("expected HasSources to be true")
 	}
 }
 
-func TestHandleVespaConnect_EmptyBody(t *testing.T) {
-	mockVespa := &mockVespaAdminService{
-		connectFn: func(ctx context.Context, req driving.ConnectVespaRequest) (*driving.VespaStatus, error) {
-			return &driving.VespaStatus{Connected: true}, nil
+func TestHandleSetupStatus_SetupIncomplete(t *testing.T) {
+	mockSetup := &mockSetupService{
+		getStatusFn: func(ctx context.Context) (*driving.SetupStatusResponse, error) {
+			return &driving.SetupStatusResponse{
+				SetupComplete: false,
+				HasUsers:      false,
+				HasSources:    false,
+			}, nil
 		},
 	}
 
-	server := &Server{vespaAdminService: mockVespa}
+	server := &Server{setupService: mockSetup}
 
-	req := httptest.NewRequest("POST", "/api/v1/admin/vespa/connect", nil)
+	req := httptest.NewRequest("GET", "/api/v1/setup/status", nil)
 	rr := httptest.NewRecorder()
 
-	server.handleVespaConnect(rr, req)
+	server.handleSetupStatus(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", rr.Code)
 	}
+
+	var response driving.SetupStatusResponse
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response.SetupComplete {
+		t.Error("expected setup to be incomplete")
+	}
+	if response.HasUsers {
+		t.Error("expected HasUsers to be false")
+	}
+	if response.HasSources {
+		t.Error("expected HasSources to be false")
+	}
 }
 
-func TestHandleVespaConnect_InvalidJSON(t *testing.T) {
-	server := &Server{vespaAdminService: &mockVespaAdminService{}}
+func TestHandleSetupStatus_ServiceUnavailable(t *testing.T) {
+	server := &Server{setupService: nil}
 
-	req := httptest.NewRequest("POST", "/api/v1/admin/vespa/connect", bytes.NewBufferString("invalid"))
+	req := httptest.NewRequest("GET", "/api/v1/setup/status", nil)
 	rr := httptest.NewRecorder()
 
-	server.handleVespaConnect(rr, req)
+	server.handleSetupStatus(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503, got %d", rr.Code)
+	}
+}
+
+func TestHandleSetupStatus_Error(t *testing.T) {
+	mockSetup := &mockSetupService{
+		getStatusFn: func(ctx context.Context) (*driving.SetupStatusResponse, error) {
+			return nil, errors.New("database connection failed")
+		},
+	}
+
+	server := &Server{setupService: mockSetup}
+
+	req := httptest.NewRequest("GET", "/api/v1/setup/status", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleSetupStatus(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", rr.Code)
+	}
+}
+
+// AI Providers Handler Tests
+
+func TestHandleGetAIProviders_Success(t *testing.T) {
+	mockSettings := &mockSettingsService{
+		getAIProvidersFn: func(ctx context.Context) (*driving.AIProvidersResponse, error) {
+			return &driving.AIProvidersResponse{
+				Embedding: []domain.AIProviderInfo{
+					{
+						ID:   string(domain.AIProviderOpenAI),
+						Name: "OpenAI",
+						Models: []domain.AIModelInfo{
+							{
+								ID:         "text-embedding-3-small",
+								Name:       "Text Embedding 3 Small",
+								Dimensions: 1536,
+							},
+						},
+						RequiresAPIKey:  true,
+						RequiresBaseURL: false,
+						APIKeyURL:       "https://platform.openai.com/api-keys",
+					},
+				},
+				LLM: []domain.AIProviderInfo{
+					{
+						ID:   string(domain.AIProviderOpenAI),
+						Name: "OpenAI",
+						Models: []domain.AIModelInfo{
+							{
+								ID:   "gpt-4o",
+								Name: "GPT-4o",
+							},
+						},
+						RequiresAPIKey:  true,
+						RequiresBaseURL: false,
+						APIKeyURL:       "https://platform.openai.com/api-keys",
+					},
+				},
+			}, nil
+		},
+	}
+
+	server := &Server{settingsService: mockSettings}
+
+	req := httptest.NewRequest("GET", "/api/v1/settings/ai/providers", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleGetAIProviders(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var response driving.AIProvidersResponse
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(response.Embedding) == 0 {
+		t.Error("expected at least one embedding provider")
+	}
+	if len(response.LLM) == 0 {
+		t.Error("expected at least one LLM provider")
+	}
+
+	// Verify OpenAI embedding provider
+	if response.Embedding[0].ID != string(domain.AIProviderOpenAI) {
+		t.Errorf("expected provider ID 'openai', got %s", response.Embedding[0].ID)
+	}
+	if response.Embedding[0].Name != "OpenAI" {
+		t.Errorf("expected provider name 'OpenAI', got %s", response.Embedding[0].Name)
+	}
+	if !response.Embedding[0].RequiresAPIKey {
+		t.Error("expected RequiresAPIKey to be true")
+	}
+	if response.Embedding[0].RequiresBaseURL {
+		t.Error("expected RequiresBaseURL to be false")
+	}
+	if response.Embedding[0].APIKeyURL == "" {
+		t.Error("expected APIKeyURL to be set")
+	}
+	if len(response.Embedding[0].Models) == 0 {
+		t.Error("expected at least one model")
+	}
+	if response.Embedding[0].Models[0].Dimensions == 0 {
+		t.Error("expected model to have dimensions")
+	}
+
+	// Verify OpenAI LLM provider
+	if response.LLM[0].ID != string(domain.AIProviderOpenAI) {
+		t.Errorf("expected provider ID 'openai', got %s", response.LLM[0].ID)
+	}
+	if len(response.LLM[0].Models) == 0 {
+		t.Error("expected at least one model")
+	}
+}
+
+func TestHandleGetAIProviders_Error(t *testing.T) {
+	mockSettings := &mockSettingsService{
+		getAIProvidersFn: func(ctx context.Context) (*driving.AIProvidersResponse, error) {
+			return nil, errors.New("internal error")
+		},
+	}
+
+	server := &Server{settingsService: mockSettings}
+
+	req := httptest.NewRequest("GET", "/api/v1/settings/ai/providers", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleGetAIProviders(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", rr.Code)
+	}
+}
+
+// Tests for new endpoints added in Issue #16
+
+// GET /api/v1/users/{id} handler tests
+
+func TestHandleGetUser_Success(t *testing.T) {
+	mockUser := &mockUserService{
+		getFn: func(ctx context.Context, id string) (*domain.User, error) {
+			if id == "user-1" {
+				return &domain.User{
+					ID:    id,
+					Name:  "John Doe",
+					Email: "john@example.com",
+					Role:  domain.RoleAdmin,
+				}, nil
+			}
+			return nil, domain.ErrNotFound
+		},
+	}
+
+	server := &Server{userService: mockUser}
+
+	req := httptest.NewRequest("GET", "/api/v1/users/user-1", nil)
+	req.SetPathValue("id", "user-1")
+	rr := httptest.NewRecorder()
+
+	server.handleGetUser(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var response domain.UserSummary
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.Name != "John Doe" {
+		t.Errorf("expected name 'John Doe', got %s", response.Name)
+	}
+	if response.Email != "john@example.com" {
+		t.Errorf("expected email 'john@example.com', got %s", response.Email)
+	}
+}
+
+func TestHandleGetUser_NotFound(t *testing.T) {
+	mockUser := &mockUserService{
+		getFn: func(ctx context.Context, id string) (*domain.User, error) {
+			return nil, domain.ErrNotFound
+		},
+	}
+
+	server := &Server{userService: mockUser}
+
+	req := httptest.NewRequest("GET", "/api/v1/users/user-999", nil)
+	req.SetPathValue("id", "user-999")
+	rr := httptest.NewRecorder()
+
+	server.handleGetUser(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestHandleGetUser_MissingID(t *testing.T) {
+	server := &Server{userService: &mockUserService{}}
+
+	req := httptest.NewRequest("GET", "/api/v1/users/", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleGetUser(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("expected status 400, got %d", rr.Code)
 	}
 }
 
-func TestHandleVespaConnect_Error(t *testing.T) {
-	mockVespa := &mockVespaAdminService{
-		connectFn: func(ctx context.Context, req driving.ConnectVespaRequest) (*driving.VespaStatus, error) {
-			return nil, errors.New("connection failed")
+func TestHandleGetUser_InternalError(t *testing.T) {
+	mockUser := &mockUserService{
+		getFn: func(ctx context.Context, id string) (*domain.User, error) {
+			return nil, errors.New("database error")
 		},
 	}
 
-	server := &Server{vespaAdminService: mockVespa}
+	server := &Server{userService: mockUser}
 
-	body, _ := json.Marshal(driving.ConnectVespaRequest{
-		Endpoint: "http://localhost:8080",
-		DevMode:  true,
-	})
-	req := httptest.NewRequest("POST", "/api/v1/admin/vespa/connect", bytes.NewBuffer(body))
+	req := httptest.NewRequest("GET", "/api/v1/users/user-1", nil)
+	req.SetPathValue("id", "user-1")
 	rr := httptest.NewRecorder()
 
-	server.handleVespaConnect(rr, req)
+	server.handleGetUser(rr, req)
 
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("expected status 500, got %d", rr.Code)
 	}
 }
 
-func TestHandleVespaStatus_Success(t *testing.T) {
-	mockVespa := &mockVespaAdminService{
-		statusFn: func(ctx context.Context) (*driving.VespaStatus, error) {
-			return &driving.VespaStatus{
-				Connected:  true,
-				SchemaMode: domain.VespacSchemaModeHybrid,
-				Healthy:    true,
+// PUT /api/v1/users/{id} handler tests
+
+func TestHandleUpdateUser_Success(t *testing.T) {
+	newName := "Jane Doe"
+	mockUser := &mockUserService{
+		updateFn: func(ctx context.Context, id string, req driving.UpdateUserRequest) (*domain.User, error) {
+			if id == "user-1" {
+				return &domain.User{
+					ID:    id,
+					Name:  newName,
+					Email: "john@example.com",
+					Role:  domain.RoleAdmin,
+				}, nil
+			}
+			return nil, domain.ErrNotFound
+		},
+	}
+
+	server := &Server{userService: mockUser}
+
+	body := bytes.NewBufferString(`{"name": "Jane Doe"}`)
+	req := httptest.NewRequest("PUT", "/api/v1/users/user-1", body)
+	req.SetPathValue("id", "user-1")
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateUser(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var response domain.UserSummary
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.Name != newName {
+		t.Errorf("expected name '%s', got %s", newName, response.Name)
+	}
+}
+
+func TestHandleUpdateUser_NotFound(t *testing.T) {
+	mockUser := &mockUserService{
+		updateFn: func(ctx context.Context, id string, req driving.UpdateUserRequest) (*domain.User, error) {
+			return nil, domain.ErrNotFound
+		},
+	}
+
+	server := &Server{userService: mockUser}
+
+	body := bytes.NewBufferString(`{"name": "Jane Doe"}`)
+	req := httptest.NewRequest("PUT", "/api/v1/users/user-999", body)
+	req.SetPathValue("id", "user-999")
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateUser(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestHandleUpdateUser_InvalidInput(t *testing.T) {
+	mockUser := &mockUserService{
+		updateFn: func(ctx context.Context, id string, req driving.UpdateUserRequest) (*domain.User, error) {
+			return nil, domain.ErrInvalidInput
+		},
+	}
+
+	server := &Server{userService: mockUser}
+
+	body := bytes.NewBufferString(`{"name": ""}`)
+	req := httptest.NewRequest("PUT", "/api/v1/users/user-1", body)
+	req.SetPathValue("id", "user-1")
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateUser(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleUpdateUser_InvalidJSON(t *testing.T) {
+	server := &Server{userService: &mockUserService{}}
+
+	body := bytes.NewBufferString(`{invalid json}`)
+	req := httptest.NewRequest("PUT", "/api/v1/users/user-1", body)
+	req.SetPathValue("id", "user-1")
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateUser(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleUpdateUser_MissingID(t *testing.T) {
+	server := &Server{userService: &mockUserService{}}
+
+	body := bytes.NewBufferString(`{"name": "Jane Doe"}`)
+	req := httptest.NewRequest("PUT", "/api/v1/users/", body)
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateUser(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+}
+
+// POST /api/v1/users/{id}/reset-password handler tests
+
+func TestHandleResetUserPassword_Success(t *testing.T) {
+	mockUser := &mockUserService{
+		setPasswordFn: func(ctx context.Context, id string, password string) error {
+			if id == "user-1" && password == "newpassword123" {
+				return nil
+			}
+			return domain.ErrNotFound
+		},
+	}
+
+	server := &Server{userService: mockUser}
+
+	body := bytes.NewBufferString(`{"password": "newpassword123"}`)
+	req := httptest.NewRequest("POST", "/api/v1/users/user-1/reset-password", body)
+	req.SetPathValue("id", "user-1")
+	rr := httptest.NewRecorder()
+
+	server.handleResetUserPassword(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var response map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response["status"] != "password reset successfully" {
+		t.Errorf("expected success status, got %s", response["status"])
+	}
+}
+
+func TestHandleResetUserPassword_NotFound(t *testing.T) {
+	mockUser := &mockUserService{
+		setPasswordFn: func(ctx context.Context, id string, password string) error {
+			return domain.ErrNotFound
+		},
+	}
+
+	server := &Server{userService: mockUser}
+
+	body := bytes.NewBufferString(`{"password": "newpassword123"}`)
+	req := httptest.NewRequest("POST", "/api/v1/users/user-999/reset-password", body)
+	req.SetPathValue("id", "user-999")
+	rr := httptest.NewRecorder()
+
+	server.handleResetUserPassword(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestHandleResetUserPassword_EmptyPassword(t *testing.T) {
+	server := &Server{userService: &mockUserService{}}
+
+	body := bytes.NewBufferString(`{"password": ""}`)
+	req := httptest.NewRequest("POST", "/api/v1/users/user-1/reset-password", body)
+	req.SetPathValue("id", "user-1")
+	rr := httptest.NewRecorder()
+
+	server.handleResetUserPassword(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleResetUserPassword_InvalidJSON(t *testing.T) {
+	server := &Server{userService: &mockUserService{}}
+
+	body := bytes.NewBufferString(`{invalid json}`)
+	req := httptest.NewRequest("POST", "/api/v1/users/user-1/reset-password", body)
+	req.SetPathValue("id", "user-1")
+	rr := httptest.NewRecorder()
+
+	server.handleResetUserPassword(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleResetUserPassword_MissingID(t *testing.T) {
+	server := &Server{userService: &mockUserService{}}
+
+	body := bytes.NewBufferString(`{"password": "newpassword123"}`)
+	req := httptest.NewRequest("POST", "/api/v1/users//reset-password", body)
+	rr := httptest.NewRecorder()
+
+	server.handleResetUserPassword(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleResetUserPassword_InvalidPassword(t *testing.T) {
+	mockUser := &mockUserService{
+		setPasswordFn: func(ctx context.Context, id string, password string) error {
+			return domain.ErrInvalidInput
+		},
+	}
+
+	server := &Server{userService: mockUser}
+
+	body := bytes.NewBufferString(`{"password": "weak"}`)
+	req := httptest.NewRequest("POST", "/api/v1/users/user-1/reset-password", body)
+	req.SetPathValue("id", "user-1")
+	rr := httptest.NewRecorder()
+
+	server.handleResetUserPassword(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+}
+
+// GET /api/v1/documents/{id}/open handler tests
+
+func TestHandleOpenDocument_Success(t *testing.T) {
+	mockDoc := &mockDocumentService{
+		getFn: func(ctx context.Context, id string) (*domain.Document, error) {
+			if id == "doc-1" {
+				return &domain.Document{
+					ID:    id,
+					Title: "Test Document",
+					Path:  "https://github.com/owner/repo/blob/main/README.md",
+				}, nil
+			}
+			return nil, domain.ErrNotFound
+		},
+	}
+
+	server := &Server{docService: mockDoc}
+
+	req := httptest.NewRequest("GET", "/api/v1/documents/doc-1/open", nil)
+	req.SetPathValue("id", "doc-1")
+	rr := httptest.NewRecorder()
+
+	server.handleOpenDocument(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var response DocumentURLResponse
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.URL != "https://github.com/owner/repo/blob/main/README.md" {
+		t.Errorf("expected URL 'https://github.com/owner/repo/blob/main/README.md', got %s", response.URL)
+	}
+}
+
+func TestHandleOpenDocument_NotFound(t *testing.T) {
+	mockDoc := &mockDocumentService{
+		getFn: func(ctx context.Context, id string) (*domain.Document, error) {
+			return nil, domain.ErrNotFound
+		},
+	}
+
+	server := &Server{docService: mockDoc}
+
+	req := httptest.NewRequest("GET", "/api/v1/documents/doc-999/open", nil)
+	req.SetPathValue("id", "doc-999")
+	rr := httptest.NewRecorder()
+
+	server.handleOpenDocument(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestHandleOpenDocument_MissingID(t *testing.T) {
+	server := &Server{docService: &mockDocumentService{}}
+
+	req := httptest.NewRequest("GET", "/api/v1/documents//open", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleOpenDocument(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleOpenDocument_InternalError(t *testing.T) {
+	mockDoc := &mockDocumentService{
+		getFn: func(ctx context.Context, id string) (*domain.Document, error) {
+			return nil, errors.New("database error")
+		},
+	}
+
+	server := &Server{docService: mockDoc}
+
+	req := httptest.NewRequest("GET", "/api/v1/documents/doc-1/open", nil)
+	req.SetPathValue("id", "doc-1")
+	rr := httptest.NewRecorder()
+
+	server.handleOpenDocument(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", rr.Code)
+	}
+}
+
+// GET /api/v1/connections/{id}/sources handler tests
+
+func TestHandleGetConnectionSources_Success(t *testing.T) {
+	mockConnection := &mockConnectionService{
+		getFn: func(ctx context.Context, id string) (*domain.ConnectionSummary, error) {
+			if id == "conn-1" {
+				return &domain.ConnectionSummary{
+					ID:           id,
+					ProviderType: domain.ProviderTypeGitHub,
+				}, nil
+			}
+			return nil, domain.ErrNotFound
+		},
+	}
+
+	mockSource := &mockSourceService{
+		listByConnectionFn: func(ctx context.Context, connectionID string) ([]*domain.Source, error) {
+			if connectionID == "conn-1" {
+				return []*domain.Source{
+					{
+						ID:           "src-1",
+						Name:         "Test Source",
+						ProviderType: domain.ProviderTypeGitHub,
+						ConnectionID: connectionID,
+						Enabled:      true,
+					},
+				}, nil
+			}
+			return []*domain.Source{}, nil
+		},
+	}
+
+	server := &Server{
+		connectionService: mockConnection,
+		sourceService:     mockSource,
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/connections/conn-1/sources", nil)
+	req.SetPathValue("id", "conn-1")
+	rr := httptest.NewRecorder()
+
+	server.handleGetConnectionSources(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var response []*domain.Source
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(response) != 1 {
+		t.Errorf("expected 1 source, got %d", len(response))
+	}
+	if response[0].Name != "Test Source" {
+		t.Errorf("expected source name 'Test Source', got %s", response[0].Name)
+	}
+}
+
+func TestHandleGetConnectionSources_EmptyList(t *testing.T) {
+	mockConnection := &mockConnectionService{
+		getFn: func(ctx context.Context, id string) (*domain.ConnectionSummary, error) {
+			if id == "conn-2" {
+				return &domain.ConnectionSummary{
+					ID:           id,
+					ProviderType: domain.ProviderTypeGitHub,
+				}, nil
+			}
+			return nil, domain.ErrNotFound
+		},
+	}
+
+	mockSource := &mockSourceService{
+		listByConnectionFn: func(ctx context.Context, connectionID string) ([]*domain.Source, error) {
+			return []*domain.Source{}, nil
+		},
+	}
+
+	server := &Server{
+		connectionService: mockConnection,
+		sourceService:     mockSource,
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/connections/conn-2/sources", nil)
+	req.SetPathValue("id", "conn-2")
+	rr := httptest.NewRecorder()
+
+	server.handleGetConnectionSources(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var response []*domain.Source
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(response) != 0 {
+		t.Errorf("expected 0 sources, got %d", len(response))
+	}
+}
+
+func TestHandleGetConnectionSources_ConnectionNotFound(t *testing.T) {
+	mockConnection := &mockConnectionService{
+		getFn: func(ctx context.Context, id string) (*domain.ConnectionSummary, error) {
+			return nil, domain.ErrNotFound
+		},
+	}
+
+	server := &Server{
+		connectionService: mockConnection,
+		sourceService:     &mockSourceService{},
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/connections/conn-999/sources", nil)
+	req.SetPathValue("id", "conn-999")
+	rr := httptest.NewRecorder()
+
+	server.handleGetConnectionSources(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestHandleGetConnectionSources_MissingID(t *testing.T) {
+	server := &Server{
+		connectionService: &mockConnectionService{},
+		sourceService:     &mockSourceService{},
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/connections//sources", nil)
+	rr := httptest.NewRecorder()
+
+	server.handleGetConnectionSources(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleGetConnectionSources_ServiceUnavailable(t *testing.T) {
+	server := &Server{
+		connectionService: nil,
+		sourceService:     &mockSourceService{},
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/connections/conn-1/sources", nil)
+	req.SetPathValue("id", "conn-1")
+	rr := httptest.NewRecorder()
+
+	server.handleGetConnectionSources(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503, got %d", rr.Code)
+	}
+}
+
+func TestHandleGetConnectionSources_SourceListError(t *testing.T) {
+	mockConnection := &mockConnectionService{
+		getFn: func(ctx context.Context, id string) (*domain.ConnectionSummary, error) {
+			return &domain.ConnectionSummary{
+				ID:           id,
+				ProviderType: domain.ProviderTypeGitHub,
 			}, nil
 		},
 	}
 
-	server := &Server{vespaAdminService: mockVespa}
-
-	req := httptest.NewRequest("GET", "/api/v1/admin/vespa/status", nil)
-	rr := httptest.NewRecorder()
-
-	server.handleVespaStatus(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
-}
-
-func TestHandleVespaStatus_Error(t *testing.T) {
-	mockVespa := &mockVespaAdminService{
-		statusFn: func(ctx context.Context) (*driving.VespaStatus, error) {
-			return nil, errors.New("vespa not configured")
+	mockSource := &mockSourceService{
+		listByConnectionFn: func(ctx context.Context, connectionID string) ([]*domain.Source, error) {
+			return nil, errors.New("database error")
 		},
 	}
 
-	server := &Server{vespaAdminService: mockVespa}
+	server := &Server{
+		connectionService: mockConnection,
+		sourceService:     mockSource,
+	}
 
-	req := httptest.NewRequest("GET", "/api/v1/admin/vespa/status", nil)
+	req := httptest.NewRequest("GET", "/api/v1/connections/conn-1/sources", nil)
+	req.SetPathValue("id", "conn-1")
 	rr := httptest.NewRecorder()
 
-	server.handleVespaStatus(rr, req)
+	server.handleGetConnectionSources(rr, req)
 
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("expected status 500, got %d", rr.Code)
 	}
 }
 
-func TestHandleVespaHealth_Success(t *testing.T) {
-	mockVespa := &mockVespaAdminService{
-		healthCheckFn: func(ctx context.Context) error {
-			return nil
+// Capability Preferences Handler Tests
+
+func TestHandleGetCapabilityPreferences_Success(t *testing.T) {
+	mockCapabilities := &mockCapabilitiesService{
+		getCapabilityPreferencesFn: func(ctx context.Context, teamID string) (*domain.CapabilityPreferences, error) {
+			return &domain.CapabilityPreferences{
+				TeamID:                   teamID,
+				TextIndexingEnabled:      true,
+				EmbeddingIndexingEnabled: true,
+				BM25SearchEnabled:        true,
+				VectorSearchEnabled:      true,
+				UpdatedAt:                time.Now(),
+			}, nil
 		},
 	}
 
-	server := &Server{vespaAdminService: mockVespa}
+	server := &Server{capabilitiesService: mockCapabilities}
 
-	req := httptest.NewRequest("GET", "/api/v1/admin/vespa/health", nil)
+	req := httptest.NewRequest("GET", "/api/v1/capability-preferences", nil)
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		TeamID: "team-123",
+		Role:   domain.RoleAdmin,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
 	rr := httptest.NewRecorder()
 
-	server.handleVespaHealth(rr, req)
+	server.handleGetCapabilityPreferences(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", rr.Code)
 	}
+
+	var response domain.CapabilityPreferences
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.TeamID != "team-123" {
+		t.Errorf("expected team-123, got %s", response.TeamID)
+	}
+	if !response.TextIndexingEnabled {
+		t.Error("expected TextIndexingEnabled to be true")
+	}
+	if !response.EmbeddingIndexingEnabled {
+		t.Error("expected EmbeddingIndexingEnabled to be true")
+	}
 }
 
-func TestHandleVespaHealth_Unhealthy(t *testing.T) {
-	mockVespa := &mockVespaAdminService{
-		healthCheckFn: func(ctx context.Context) error {
-			return errors.New("vespa cluster unhealthy")
+func TestHandleGetCapabilityPreferences_Unauthenticated(t *testing.T) {
+	mockCapabilities := &mockCapabilitiesService{}
+
+	server := &Server{capabilitiesService: mockCapabilities}
+
+	req := httptest.NewRequest("GET", "/api/v1/capability-preferences", nil)
+	// No auth context set
+	rr := httptest.NewRecorder()
+
+	server.handleGetCapabilityPreferences(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", rr.Code)
+	}
+
+	var response map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response["error"] != "unauthorized" {
+		t.Errorf("expected error 'unauthorized', got %s", response["error"])
+	}
+}
+
+func TestHandleGetCapabilityPreferences_ServiceError(t *testing.T) {
+	mockCapabilities := &mockCapabilitiesService{
+		getCapabilityPreferencesFn: func(ctx context.Context, teamID string) (*domain.CapabilityPreferences, error) {
+			return nil, errors.New("database error")
 		},
 	}
 
-	server := &Server{vespaAdminService: mockVespa}
+	server := &Server{capabilitiesService: mockCapabilities}
 
-	req := httptest.NewRequest("GET", "/api/v1/admin/vespa/health", nil)
+	req := httptest.NewRequest("GET", "/api/v1/capability-preferences", nil)
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		TeamID: "team-123",
+		Role:   domain.RoleAdmin,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
 	rr := httptest.NewRecorder()
 
-	server.handleVespaHealth(rr, req)
+	server.handleGetCapabilityPreferences(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", rr.Code)
+	}
+}
+
+func TestHandleGetCapabilityPreferences_ServiceUnavailable(t *testing.T) {
+	// Test when capabilitiesService is nil
+	server := &Server{capabilitiesService: nil}
+
+	req := httptest.NewRequest("GET", "/api/v1/capability-preferences", nil)
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		TeamID: "team-123",
+		Role:   domain.RoleAdmin,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	server.handleGetCapabilityPreferences(rr, req)
 
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected status 503, got %d", rr.Code)
+	}
+}
+
+func TestHandleUpdateCapabilityPreferences_Success(t *testing.T) {
+	mockCapabilities := &mockCapabilitiesService{
+		updateCapabilityPreferencesFn: func(ctx context.Context, teamID string, req driving.UpdateCapabilityPreferencesRequest) (*domain.CapabilityPreferences, error) {
+			return &domain.CapabilityPreferences{
+				TeamID:                   teamID,
+				TextIndexingEnabled:      true,
+				EmbeddingIndexingEnabled: true,
+				BM25SearchEnabled:        true,
+				VectorSearchEnabled:      true,
+				UpdatedAt:                time.Now(),
+			}, nil
+		},
+	}
+
+	server := &Server{capabilitiesService: mockCapabilities}
+
+	embeddingEnabled := true
+	body, _ := json.Marshal(driving.UpdateCapabilityPreferencesRequest{
+		EmbeddingIndexingEnabled: &embeddingEnabled,
+	})
+	req := httptest.NewRequest("PUT", "/api/v1/capability-preferences", bytes.NewBuffer(body))
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		TeamID: "team-123",
+		Role:   domain.RoleAdmin,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateCapabilityPreferences(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var response domain.CapabilityPreferences
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.TeamID != "team-123" {
+		t.Errorf("expected team-123, got %s", response.TeamID)
+	}
+	if !response.EmbeddingIndexingEnabled {
+		t.Error("expected EmbeddingIndexingEnabled to be true")
+	}
+}
+
+func TestHandleUpdateCapabilityPreferences_InvalidJSON(t *testing.T) {
+	mockCapabilities := &mockCapabilitiesService{}
+
+	server := &Server{capabilitiesService: mockCapabilities}
+
+	req := httptest.NewRequest("PUT", "/api/v1/capability-preferences", bytes.NewBufferString("invalid json"))
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		TeamID: "team-123",
+		Role:   domain.RoleAdmin,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateCapabilityPreferences(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+
+	var response map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response["error"] != "invalid request body" {
+		t.Errorf("expected error 'invalid request body', got %s", response["error"])
+	}
+}
+
+func TestHandleUpdateCapabilityPreferences_Unauthenticated(t *testing.T) {
+	mockCapabilities := &mockCapabilitiesService{}
+
+	server := &Server{capabilitiesService: mockCapabilities}
+
+	body, _ := json.Marshal(driving.UpdateCapabilityPreferencesRequest{})
+	req := httptest.NewRequest("PUT", "/api/v1/capability-preferences", bytes.NewBuffer(body))
+	// No auth context set
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateCapabilityPreferences(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", rr.Code)
+	}
+
+	var response map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response["error"] != "unauthorized" {
+		t.Errorf("expected error 'unauthorized', got %s", response["error"])
+	}
+}
+
+func TestHandleUpdateCapabilityPreferences_ServiceError(t *testing.T) {
+	mockCapabilities := &mockCapabilitiesService{
+		updateCapabilityPreferencesFn: func(ctx context.Context, teamID string, req driving.UpdateCapabilityPreferencesRequest) (*domain.CapabilityPreferences, error) {
+			return nil, errors.New("database error")
+		},
+	}
+
+	server := &Server{capabilitiesService: mockCapabilities}
+
+	embeddingEnabled := true
+	body, _ := json.Marshal(driving.UpdateCapabilityPreferencesRequest{
+		EmbeddingIndexingEnabled: &embeddingEnabled,
+	})
+	req := httptest.NewRequest("PUT", "/api/v1/capability-preferences", bytes.NewBuffer(body))
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		TeamID: "team-123",
+		Role:   domain.RoleAdmin,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateCapabilityPreferences(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", rr.Code)
+	}
+}
+
+func TestHandleUpdateCapabilityPreferences_ServiceUnavailable(t *testing.T) {
+	// Test when capabilitiesService is nil
+	server := &Server{capabilitiesService: nil}
+
+	body, _ := json.Marshal(driving.UpdateCapabilityPreferencesRequest{})
+	req := httptest.NewRequest("PUT", "/api/v1/capability-preferences", bytes.NewBuffer(body))
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		TeamID: "team-123",
+		Role:   domain.RoleAdmin,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateCapabilityPreferences(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503, got %d", rr.Code)
+	}
+}
+
+func TestHandleUpdateCapabilityPreferences_AllFields(t *testing.T) {
+	mockCapabilities := &mockCapabilitiesService{
+		updateCapabilityPreferencesFn: func(ctx context.Context, teamID string, req driving.UpdateCapabilityPreferencesRequest) (*domain.CapabilityPreferences, error) {
+			// Verify the request has all fields
+			if req.TextIndexingEnabled == nil {
+				return nil, errors.New("TextIndexingEnabled is nil")
+			}
+			if req.EmbeddingIndexingEnabled == nil {
+				return nil, errors.New("EmbeddingIndexingEnabled is nil")
+			}
+			if req.BM25SearchEnabled == nil {
+				return nil, errors.New("BM25SearchEnabled is nil")
+			}
+			if req.VectorSearchEnabled == nil {
+				return nil, errors.New("VectorSearchEnabled is nil")
+			}
+			return &domain.CapabilityPreferences{
+				TeamID:                   teamID,
+				TextIndexingEnabled:      *req.TextIndexingEnabled,
+				EmbeddingIndexingEnabled: *req.EmbeddingIndexingEnabled,
+				BM25SearchEnabled:        *req.BM25SearchEnabled,
+				VectorSearchEnabled:      *req.VectorSearchEnabled,
+				UpdatedAt:                time.Now(),
+			}, nil
+		},
+	}
+
+	server := &Server{capabilitiesService: mockCapabilities}
+
+	textEnabled := false
+	embeddingEnabled := true
+	bm25Enabled := false
+	vectorEnabled := true
+
+	body, _ := json.Marshal(driving.UpdateCapabilityPreferencesRequest{
+		TextIndexingEnabled:      &textEnabled,
+		EmbeddingIndexingEnabled: &embeddingEnabled,
+		BM25SearchEnabled:        &bm25Enabled,
+		VectorSearchEnabled:      &vectorEnabled,
+	})
+	req := httptest.NewRequest("PUT", "/api/v1/capability-preferences", bytes.NewBuffer(body))
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		TeamID: "team-123",
+		Role:   domain.RoleAdmin,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateCapabilityPreferences(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var response domain.CapabilityPreferences
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.TextIndexingEnabled {
+		t.Error("expected TextIndexingEnabled to be false")
+	}
+	if !response.EmbeddingIndexingEnabled {
+		t.Error("expected EmbeddingIndexingEnabled to be true")
+	}
+	if response.BM25SearchEnabled {
+		t.Error("expected BM25SearchEnabled to be false")
+	}
+	if !response.VectorSearchEnabled {
+		t.Error("expected VectorSearchEnabled to be true")
+	}
+}
+
+func TestHandleUpdateCapabilityPreferences_EmptyBody(t *testing.T) {
+	mockCapabilities := &mockCapabilitiesService{
+		updateCapabilityPreferencesFn: func(ctx context.Context, teamID string, req driving.UpdateCapabilityPreferencesRequest) (*domain.CapabilityPreferences, error) {
+			// Empty request - all fields should be nil
+			return domain.DefaultCapabilityPreferences(teamID), nil
+		},
+	}
+
+	server := &Server{capabilitiesService: mockCapabilities}
+
+	// Empty JSON object
+	body, _ := json.Marshal(driving.UpdateCapabilityPreferencesRequest{})
+	req := httptest.NewRequest("PUT", "/api/v1/capability-preferences", bytes.NewBuffer(body))
+	authCtx := &domain.AuthContext{
+		UserID: "user-1",
+		TeamID: "team-123",
+		Role:   domain.RoleAdmin,
+	}
+	ctx := context.WithValue(req.Context(), authContextKey, authCtx)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	server.handleUpdateCapabilityPreferences(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
 	}
 }

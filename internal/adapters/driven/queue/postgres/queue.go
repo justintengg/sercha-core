@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
 )
 
 // Ensure Queue implements TaskQueue
@@ -82,7 +82,7 @@ func (q *Queue) EnqueueBatch(ctx context.Context, tasks []*domain.Task) error {
 	if err != nil {
 		return fmt.Errorf("prepare statement: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, task := range tasks {
 		payload, err := json.Marshal(task.Payload)
@@ -412,7 +412,7 @@ func (q *Queue) ListTasks(ctx context.Context, filter driven.TaskFilter) ([]*dom
 	if err != nil {
 		return nil, fmt.Errorf("query tasks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tasks []*domain.Task
 	for rows.Next() {
@@ -531,7 +531,7 @@ func (q *Queue) Stats(ctx context.Context) (*driven.QueueStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query stats: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var status string
@@ -573,6 +573,133 @@ func (q *Queue) Stats(ctx context.Context) (*driven.QueueStats, error) {
 // Ping checks database connectivity
 func (q *Queue) Ping(ctx context.Context) error {
 	return q.db.PingContext(ctx)
+}
+
+// GetJobStats computes aggregated job statistics for a time period
+func (q *Queue) GetJobStats(ctx context.Context, teamID string, period domain.AnalyticsPeriod) (*domain.JobStats, error) {
+	stats := domain.NewJobStats(period)
+
+	// Get counts by status
+	statusQuery := `
+		SELECT
+			COUNT(*) as total_jobs,
+			COUNT(*) FILTER (WHERE status = $4) as pending_jobs,
+			COUNT(*) FILTER (WHERE status = $5) as processing_jobs,
+			COUNT(*) FILTER (WHERE status = $6) as completed_jobs,
+			COUNT(*) FILTER (WHERE status = $7) as failed_jobs,
+			COALESCE(SUM(attempts - 1), 0) as total_retries
+		FROM tasks
+		WHERE team_id = $1
+		  AND created_at >= $2
+		  AND created_at <= $3
+	`
+
+	err := q.db.QueryRowContext(ctx, statusQuery,
+		teamID,
+		period.Start,
+		period.End,
+		domain.TaskStatusPending,
+		domain.TaskStatusProcessing,
+		domain.TaskStatusCompleted,
+		domain.TaskStatusFailed,
+	).Scan(
+		&stats.TotalJobs,
+		&stats.PendingJobs,
+		&stats.ProcessingJobs,
+		&stats.CompletedJobs,
+		&stats.FailedJobs,
+		&stats.TotalRetries,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query job stats: %w", err)
+	}
+
+	// Calculate success rate
+	stats.CalculateSuccessRate()
+
+	// Get average duration for completed jobs
+	durationQuery := `
+		SELECT AVG(EXTRACT(EPOCH FROM (completed_at - started_at)) * 1000)
+		FROM tasks
+		WHERE team_id = $1
+		  AND created_at >= $2
+		  AND created_at <= $3
+		  AND status = $4
+		  AND started_at IS NOT NULL
+		  AND completed_at IS NOT NULL
+	`
+
+	var avgDuration sql.NullFloat64
+	err = q.db.QueryRowContext(ctx, durationQuery,
+		teamID,
+		period.Start,
+		period.End,
+		domain.TaskStatusCompleted,
+	).Scan(&avgDuration)
+	if err != nil {
+		return nil, fmt.Errorf("query average duration: %w", err)
+	}
+
+	if avgDuration.Valid {
+		stats.AverageDuration = avgDuration.Float64
+	}
+
+	// Get jobs by type
+	typeQuery := `
+		SELECT type, COUNT(*)
+		FROM tasks
+		WHERE team_id = $1
+		  AND created_at >= $2
+		  AND created_at <= $3
+		GROUP BY type
+	`
+
+	rows, err := q.db.QueryContext(ctx, typeQuery, teamID, period.Start, period.End)
+	if err != nil {
+		return nil, fmt.Errorf("query jobs by type: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var taskType string
+		var count int64
+		if err := rows.Scan(&taskType, &count); err != nil {
+			return nil, fmt.Errorf("scan job type: %w", err)
+		}
+		stats.JobsByType[domain.TaskType(taskType)] = count
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate job types: %w", err)
+	}
+
+	return stats, nil
+}
+
+// CountTasks returns the total number of tasks matching the filter
+func (q *Queue) CountTasks(ctx context.Context, filter driven.TaskFilter) (int64, error) {
+	query := `SELECT COUNT(*) FROM tasks WHERE team_id = $1`
+	args := []any{filter.TeamID}
+	argIndex := 2
+
+	if filter.Status != "" {
+		query += fmt.Sprintf(" AND status = $%d", argIndex)
+		args = append(args, filter.Status)
+		argIndex++
+	}
+
+	if filter.Type != "" {
+		query += fmt.Sprintf(" AND type = $%d", argIndex)
+		args = append(args, filter.Type)
+	}
+
+	var count int64
+	err := q.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count tasks: %w", err)
+	}
+
+	return count, nil
 }
 
 // Close is a no-op for the Postgres queue (db connection managed externally)

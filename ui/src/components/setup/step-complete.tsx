@@ -2,25 +2,27 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { CheckCircle2, ArrowRight, Database, Sparkles, Link2, FileText, Loader2 } from "lucide-react";
-import { getVespaStatus, getAISettings, listProviders, listSources } from "@/lib/api";
+import { CheckCircle2, ArrowRight, Sparkles, Link2, FileText, Loader2, Zap } from "lucide-react";
+import { getAISettings, listProviders, listSources, getCapabilityPreferences } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 interface StepCompleteProps {
   completedSteps: number[];
 }
 
 interface ActualStatus {
-  vespaConnected: boolean;
   aiConfigured: boolean;
+  capabilitiesConfigured: boolean;
   providerConfigured: boolean;
   sourceConnected: boolean;
 }
 
 export function StepComplete({ completedSteps }: StepCompleteProps) {
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<ActualStatus>({
-    vespaConnected: false,
     aiConfigured: false,
+    capabilitiesConfigured: false,
     providerConfigured: false,
     sourceConnected: false,
   });
@@ -29,24 +31,32 @@ export function StepComplete({ completedSteps }: StepCompleteProps) {
   useEffect(() => {
     const fetchStatus = async () => {
       try {
-        const [vespaStatus, aiSettings, providers, sources] = await Promise.all([
-          getVespaStatus().catch(() => null),
+        const [aiSettings, capabilityPrefs, providers, sources] = await Promise.all([
           getAISettings().catch(() => null),
+          getCapabilityPreferences().catch(() => null),
           listProviders().catch(() => []),
           listSources().catch(() => []),
         ]);
 
+        // Check if any capabilities are enabled
+        const capabilitiesEnabled = capabilityPrefs
+          ? capabilityPrefs.text_indexing_enabled ||
+            capabilityPrefs.embedding_indexing_enabled ||
+            capabilityPrefs.bm25_search_enabled ||
+            capabilityPrefs.vector_search_enabled
+          : false;
+
         setStatus({
-          vespaConnected: vespaStatus?.healthy || vespaStatus?.connected || false,
           aiConfigured: aiSettings?.embedding?.is_configured || aiSettings?.llm?.is_configured || false,
+          capabilitiesConfigured: capabilitiesEnabled,
           providerConfigured: providers.some((p) => p.configured),
           sourceConnected: sources.length > 0,
         });
       } catch {
         // Fall back to completedSteps if API fails
         setStatus({
-          vespaConnected: completedSteps.includes(2),
-          aiConfigured: completedSteps.includes(3),
+          aiConfigured: completedSteps.includes(2),
+          capabilitiesConfigured: completedSteps.includes(3),
           providerConfigured: completedSteps.includes(4),
           sourceConnected: completedSteps.includes(4),
         });
@@ -59,16 +69,16 @@ export function StepComplete({ completedSteps }: StepCompleteProps) {
 
   const features = [
     {
-      icon: Database,
-      title: "Vespa Connected",
-      description: "Your search engine is ready",
-      completed: status.vespaConnected,
-    },
-    {
       icon: Sparkles,
       title: "AI Configured",
       description: "Semantic search enabled",
       completed: status.aiConfigured,
+    },
+    {
+      icon: Zap,
+      title: "Capabilities Configured",
+      description: "Search capabilities enabled",
+      completed: status.capabilitiesConfigured,
     },
     {
       icon: Link2,
@@ -86,13 +96,17 @@ export function StepComplete({ completedSteps }: StepCompleteProps) {
 
   const configuredCount = features.filter((f) => f.completed).length;
 
-  if (loading) {
+  if (loading || authLoading) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-8 w-8 animate-spin text-sercha-indigo" />
       </div>
     );
   }
+
+  // Determine the destination and button text based on auth state
+  const ctaHref = isAuthenticated ? "/admin" : "/login";
+  const ctaText = isAuthenticated ? "Go to Dashboard" : "Login to Continue";
 
   return (
     <div className="mx-auto max-w-lg text-center">
@@ -118,7 +132,7 @@ export function StepComplete({ completedSteps }: StepCompleteProps) {
 
       {/* Configuration Summary */}
       <div className="mt-8 rounded-xl border border-sercha-silverline bg-white p-4">
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3">
           {features.map((feature) => (
             <div
               key={feature.title}
@@ -177,10 +191,10 @@ export function StepComplete({ completedSteps }: StepCompleteProps) {
 
       {/* CTA Button */}
       <Link
-        href="/admin"
+        href={ctaHref}
         className="mt-8 inline-flex items-center justify-center gap-2 rounded-lg bg-sercha-indigo px-8 py-3 text-sm font-medium text-white transition-colors hover:bg-sercha-indigo/90"
       >
-        Go to Dashboard
+        {ctaText}
         <ArrowRight size={16} />
       </Link>
     </div>

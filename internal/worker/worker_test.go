@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
 )
 
 // mockTaskQueue implements driven.TaskQueue for testing
@@ -126,6 +126,16 @@ func (m *mockTaskQueue) Ping(ctx context.Context) error {
 
 func (m *mockTaskQueue) Close() error {
 	return nil
+}
+
+func (m *mockTaskQueue) GetJobStats(ctx context.Context, teamID string, period domain.AnalyticsPeriod) (*domain.JobStats, error) {
+	return domain.NewJobStats(period), nil
+}
+
+func (m *mockTaskQueue) CountTasks(ctx context.Context, filter driven.TaskFilter) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return int64(len(m.tasks)), nil
 }
 
 func TestNewWorker(t *testing.T) {

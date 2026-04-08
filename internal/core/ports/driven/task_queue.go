@@ -3,7 +3,7 @@ package driven
 import (
 	"context"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
 )
 
 // TaskQueue handles background task queuing and processing.
@@ -55,6 +55,14 @@ type TaskQueue interface {
 
 	// Ping checks if the queue backend is healthy.
 	Ping(ctx context.Context) error
+
+	// GetJobStats computes aggregated job statistics for a time period
+	// This is used by the admin dashboard to show job execution metrics
+	GetJobStats(ctx context.Context, teamID string, period domain.AnalyticsPeriod) (*domain.JobStats, error)
+
+	// CountTasks returns the total number of tasks matching the filter
+	// This is used for pagination to determine if there are more results
+	CountTasks(ctx context.Context, filter TaskFilter) (int64, error)
 
 	// Close cleans up resources.
 	Close() error

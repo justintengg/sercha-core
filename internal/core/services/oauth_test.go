@@ -5,10 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/custodia-labs/sercha-core/internal/adapters/driven/connectors"
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driving"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driving"
 )
 
 // mockOAuthStateStore implements driven.OAuthStateStore for testing
@@ -50,91 +49,156 @@ func (m *mockOAuthStateStore) Cleanup(ctx context.Context) error {
 	return nil
 }
 
-// mockInstallationStore implements driven.InstallationStore for testing
-type mockInstallationStore struct {
-	installations map[string]*domain.Installation
-	byAccount     map[string]*domain.Installation // providerType:accountID -> Installation
+// mockConnectionStore implements driven.ConnectionStore for testing
+type mockConnectionStore struct {
+	connections map[string]*domain.Connection
+	byAccount   map[string]*domain.Connection // providerType:accountID -> Connection
 }
 
-func newMockInstallationStore() *mockInstallationStore {
-	return &mockInstallationStore{
-		installations: make(map[string]*domain.Installation),
-		byAccount:     make(map[string]*domain.Installation),
+func newMockConnectionStore() *mockConnectionStore {
+	return &mockConnectionStore{
+		connections: make(map[string]*domain.Connection),
+		byAccount:   make(map[string]*domain.Connection),
 	}
 }
 
-func (m *mockInstallationStore) Save(ctx context.Context, inst *domain.Installation) error {
-	m.installations[inst.ID] = inst
-	key := string(inst.ProviderType) + ":" + inst.AccountID
-	m.byAccount[key] = inst
+func (m *mockConnectionStore) Save(ctx context.Context, conn *domain.Connection) error {
+	m.connections[conn.ID] = conn
+	key := string(conn.ProviderType) + ":" + conn.AccountID
+	m.byAccount[key] = conn
 	return nil
 }
 
-func (m *mockInstallationStore) Get(ctx context.Context, id string) (*domain.Installation, error) {
-	inst, ok := m.installations[id]
+func (m *mockConnectionStore) Get(ctx context.Context, id string) (*domain.Connection, error) {
+	conn, ok := m.connections[id]
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	return inst, nil
+	return conn, nil
 }
 
-func (m *mockInstallationStore) List(ctx context.Context) ([]*domain.InstallationSummary, error) {
-	summaries := make([]*domain.InstallationSummary, 0, len(m.installations))
-	for _, inst := range m.installations {
-		summaries = append(summaries, inst.ToSummary())
+func (m *mockConnectionStore) List(ctx context.Context) ([]*domain.ConnectionSummary, error) {
+	summaries := make([]*domain.ConnectionSummary, 0, len(m.connections))
+	for _, conn := range m.connections {
+		summaries = append(summaries, conn.ToSummary())
 	}
 	return summaries, nil
 }
 
-func (m *mockInstallationStore) Delete(ctx context.Context, id string) error {
-	inst, ok := m.installations[id]
+func (m *mockConnectionStore) Delete(ctx context.Context, id string) error {
+	conn, ok := m.connections[id]
 	if !ok {
 		return domain.ErrNotFound
 	}
-	key := string(inst.ProviderType) + ":" + inst.AccountID
+	key := string(conn.ProviderType) + ":" + conn.AccountID
 	delete(m.byAccount, key)
-	delete(m.installations, id)
+	delete(m.connections, id)
 	return nil
 }
 
-func (m *mockInstallationStore) GetByProvider(ctx context.Context, providerType domain.ProviderType) ([]*domain.InstallationSummary, error) {
-	var summaries []*domain.InstallationSummary
-	for _, inst := range m.installations {
-		if inst.ProviderType == providerType {
-			summaries = append(summaries, inst.ToSummary())
+func (m *mockConnectionStore) GetByProvider(ctx context.Context, providerType domain.ProviderType) ([]*domain.ConnectionSummary, error) {
+	var summaries []*domain.ConnectionSummary
+	for _, conn := range m.connections {
+		if conn.ProviderType == providerType {
+			summaries = append(summaries, conn.ToSummary())
 		}
 	}
 	return summaries, nil
 }
 
-func (m *mockInstallationStore) GetByAccountID(ctx context.Context, providerType domain.ProviderType, accountID string) (*domain.Installation, error) {
+func (m *mockConnectionStore) GetByAccountID(ctx context.Context, providerType domain.ProviderType, accountID string) (*domain.Connection, error) {
 	key := string(providerType) + ":" + accountID
-	inst, ok := m.byAccount[key]
+	conn, ok := m.byAccount[key]
 	if !ok {
 		return nil, nil
 	}
-	return inst, nil
+	return conn, nil
 }
 
-func (m *mockInstallationStore) UpdateSecrets(ctx context.Context, id string, secrets *domain.InstallationSecrets, expiry *time.Time) error {
-	inst, ok := m.installations[id]
+func (m *mockConnectionStore) UpdateSecrets(ctx context.Context, id string, secrets *domain.ConnectionSecrets, expiry *time.Time) error {
+	conn, ok := m.connections[id]
 	if !ok {
 		return domain.ErrNotFound
 	}
-	inst.Secrets = secrets
-	inst.OAuthExpiry = expiry
-	inst.UpdatedAt = time.Now()
+	conn.Secrets = secrets
+	conn.OAuthExpiry = expiry
+	conn.UpdatedAt = time.Now()
 	return nil
 }
 
-func (m *mockInstallationStore) UpdateLastUsed(ctx context.Context, id string) error {
-	inst, ok := m.installations[id]
+func (m *mockConnectionStore) UpdateLastUsed(ctx context.Context, id string) error {
+	conn, ok := m.connections[id]
 	if !ok {
 		return domain.ErrNotFound
 	}
 	now := time.Now()
-	inst.LastUsedAt = &now
+	conn.LastUsedAt = &now
 	return nil
+}
+
+// mockConfigProvider implements driven.ConfigProvider for testing
+type mockConfigProvider struct {
+	oauthCredentials map[domain.ProviderType]*driven.OAuthCredentials
+	aiCredentials    map[domain.AIProvider]*driven.AICredentials
+	baseURL          string
+}
+
+func newMockConfigProvider() *mockConfigProvider {
+	return &mockConfigProvider{
+		oauthCredentials: make(map[domain.ProviderType]*driven.OAuthCredentials),
+		aiCredentials:    make(map[domain.AIProvider]*driven.AICredentials),
+		baseURL:          "http://localhost:3000",
+	}
+}
+
+func (m *mockConfigProvider) GetOAuthCredentials(provider domain.ProviderType) *driven.OAuthCredentials {
+	return m.oauthCredentials[provider]
+}
+
+func (m *mockConfigProvider) GetAICredentials(provider domain.AIProvider) *driven.AICredentials {
+	return m.aiCredentials[provider]
+}
+
+func (m *mockConfigProvider) IsOAuthConfigured(provider domain.ProviderType) bool {
+	return m.oauthCredentials[provider] != nil
+}
+
+func (m *mockConfigProvider) IsAIConfigured(provider domain.AIProvider) bool {
+	return m.aiCredentials[provider] != nil
+}
+
+func (m *mockConfigProvider) GetCapabilities() *driven.Capabilities {
+	oauthProviders := []domain.ProviderType{}
+	for k := range m.oauthCredentials {
+		oauthProviders = append(oauthProviders, k)
+	}
+	embeddingProviders := []domain.AIProvider{}
+	llmProviders := []domain.AIProvider{}
+	for k := range m.aiCredentials {
+		embeddingProviders = append(embeddingProviders, k)
+		llmProviders = append(llmProviders, k)
+	}
+	return &driven.Capabilities{
+		OAuthProviders:     oauthProviders,
+		EmbeddingProviders: embeddingProviders,
+		LLMProviders:       llmProviders,
+	}
+}
+
+func (m *mockConfigProvider) GetBaseURL() string {
+	return m.baseURL
+}
+
+func (m *mockConfigProvider) GetJWTSecret() string {
+	return "test-jwt-secret"
+}
+
+func (m *mockConfigProvider) GetMasterKey() []byte {
+	return []byte("test-master-key-32-bytes-long!!")
+}
+
+func (m *mockConfigProvider) GetDatabaseURL() string {
+	return "postgres://test"
 }
 
 // mockOAuthHandler implements connectors.OAuthHandler for testing
@@ -172,7 +236,7 @@ func (m *mockOAuthHandler) ExchangeCode(ctx context.Context, clientID, clientSec
 	}, nil
 }
 
-func (m *mockOAuthHandler) RefreshToken(ctx context.Context, clientID, clientSecret, refreshToken string) (*driven.OAuthToken, error) {
+func (m *mockOAuthHandler) RefreshToken(ctx context.Context, refreshToken string) (*driven.OAuthToken, error) {
 	return &driven.OAuthToken{
 		AccessToken:  "new_access_token",
 		RefreshToken: "new_refresh_token",
@@ -190,75 +254,49 @@ func (m *mockOAuthHandler) GetUserInfo(ctx context.Context, accessToken string) 
 	}, nil
 }
 
-func (m *mockOAuthHandler) DefaultConfig() connectors.OAuthDefaults {
-	return connectors.OAuthDefaults{
+func (m *mockOAuthHandler) DefaultConfig() driven.OAuthConfig {
+	return driven.OAuthConfig{
 		AuthURL:  m.authURL,
 		TokenURL: m.tokenURL,
 		Scopes:   m.scopes,
 	}
 }
 
-// mockTokenProviderFactory implements driven.TokenProviderFactory for testing
-type mockTokenProviderFactory struct{}
-
-func (m *mockTokenProviderFactory) Create(ctx context.Context, installationID string) (driven.TokenProvider, error) {
-	return &mockTokenProvider{}, nil
+// mockOAuthHandlerFactory implements driven.OAuthHandlerFactory for testing
+type mockOAuthHandlerFactory struct {
+	handlers map[domain.ProviderType]driven.OAuthHandler
 }
 
-func (m *mockTokenProviderFactory) CreateFromInstallation(ctx context.Context, inst *domain.Installation) (driven.TokenProvider, error) {
-	return &mockTokenProvider{}, nil
+func newMockOAuthHandlerFactory() *mockOAuthHandlerFactory {
+	return &mockOAuthHandlerFactory{
+		handlers: make(map[domain.ProviderType]driven.OAuthHandler),
+	}
 }
 
-type mockTokenProvider struct{}
-
-func (m *mockTokenProvider) GetAccessToken(ctx context.Context) (string, error) {
-	return "mock-token", nil
-}
-
-func (m *mockTokenProvider) GetCredentials(ctx context.Context) (*domain.Credentials, error) {
-	return &domain.Credentials{
-		AccessToken: "mock-token",
-		AuthMethod:  domain.AuthMethodOAuth2,
-	}, nil
-}
-
-func (m *mockTokenProvider) AuthMethod() domain.AuthMethod {
-	return domain.AuthMethodOAuth2
-}
-
-func (m *mockTokenProvider) IsValid(ctx context.Context) bool {
-	return true
-}
-
-// newTestConnectorFactory creates a connector factory with a mock GitHub OAuth handler
-func newTestConnectorFactory() *connectors.Factory {
-	factory := connectors.NewFactory(&mockTokenProviderFactory{})
-	factory.RegisterOAuthHandler(domain.ProviderTypeGitHub, newMockOAuthHandler())
-	return factory
+func (m *mockOAuthHandlerFactory) GetOAuthHandler(providerType domain.ProviderType) driven.OAuthHandler {
+	return m.handlers[providerType]
 }
 
 func TestOAuthService_Authorize(t *testing.T) {
-	providerStore := newMockProviderConfigStore()
+	configProvider := newMockConfigProvider()
 	oauthStateStore := newMockOAuthStateStore()
-	installStore := newMockInstallationStore()
-	factory := newTestConnectorFactory()
+	connStore := newMockConnectionStore()
+	handlerFactory := newMockOAuthHandlerFactory()
 
-	// Save GitHub provider config
-	_ = providerStore.Save(context.Background(), &domain.ProviderConfig{
-		ProviderType: domain.ProviderTypeGitHub,
-		Secrets: &domain.ProviderSecrets{
-			ClientID:     "test-client-id",
-			ClientSecret: "test-secret",
-		},
-		Enabled: true,
-	})
+	// Configure GitHub provider credentials
+	configProvider.oauthCredentials[domain.ProviderTypeGitHub] = &driven.OAuthCredentials{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-secret",
+	}
+
+	// Register GitHub OAuth handler
+	handlerFactory.handlers[domain.ProviderTypeGitHub] = newMockOAuthHandler()
 
 	svc := NewOAuthService(OAuthServiceConfig{
-		ProviderConfigStore: providerStore,
+		ConfigProvider:      configProvider,
 		OAuthStateStore:     oauthStateStore,
-		InstallationStore:   installStore,
-		ConnectorFactory:    factory,
-		BaseURL:             "http://localhost:3000",
+		ConnectionStore:     connStore,
+		OAuthHandlerFactory: handlerFactory,
 	})
 
 	// Test successful authorize
@@ -286,17 +324,16 @@ func TestOAuthService_Authorize(t *testing.T) {
 }
 
 func TestOAuthService_Authorize_ProviderNotConfigured(t *testing.T) {
-	providerStore := newMockProviderConfigStore()
+	configProvider := newMockConfigProvider()
 	oauthStateStore := newMockOAuthStateStore()
-	installStore := newMockInstallationStore()
-	factory := newTestConnectorFactory()
+	connStore := newMockConnectionStore()
+	handlerFactory := newMockOAuthHandlerFactory()
 
 	svc := NewOAuthService(OAuthServiceConfig{
-		ProviderConfigStore: providerStore,
+		ConfigProvider:      configProvider,
 		OAuthStateStore:     oauthStateStore,
-		InstallationStore:   installStore,
-		ConnectorFactory:    factory,
-		BaseURL:             "http://localhost:3000",
+		ConnectionStore:     connStore,
+		OAuthHandlerFactory: handlerFactory,
 	})
 
 	// Test authorize with unconfigured provider
@@ -309,50 +346,41 @@ func TestOAuthService_Authorize_ProviderNotConfigured(t *testing.T) {
 }
 
 func TestOAuthService_Authorize_ProviderDisabled(t *testing.T) {
-	providerStore := newMockProviderConfigStore()
+	configProvider := newMockConfigProvider()
 	oauthStateStore := newMockOAuthStateStore()
-	installStore := newMockInstallationStore()
-	factory := newTestConnectorFactory()
+	connStore := newMockConnectionStore()
+	handlerFactory := newMockOAuthHandlerFactory()
 
-	// Save GitHub provider config but disabled
-	_ = providerStore.Save(context.Background(), &domain.ProviderConfig{
-		ProviderType: domain.ProviderTypeGitHub,
-		Secrets: &domain.ProviderSecrets{
-			ClientID:     "test-client-id",
-			ClientSecret: "test-secret",
-		},
-		Enabled: false,
-	})
+	// Don't configure GitHub provider credentials (simulates disabled/unconfigured)
+	// configProvider.oauthCredentials[domain.ProviderTypeGitHub] = nil
 
 	svc := NewOAuthService(OAuthServiceConfig{
-		ProviderConfigStore: providerStore,
+		ConfigProvider:      configProvider,
 		OAuthStateStore:     oauthStateStore,
-		InstallationStore:   installStore,
-		ConnectorFactory:    factory,
-		BaseURL:             "http://localhost:3000",
+		ConnectionStore:     connStore,
+		OAuthHandlerFactory: handlerFactory,
 	})
 
-	// Test authorize with disabled provider
+	// Test authorize with disabled/unconfigured provider
 	_, err := svc.Authorize(context.Background(), driving.AuthorizeRequest{
 		ProviderType: domain.ProviderTypeGitHub,
 	})
-	if err != driving.ErrOAuthProviderDisabled {
-		t.Errorf("Authorize() error = %v, want ErrOAuthProviderDisabled", err)
+	if err != driving.ErrOAuthProviderNotFound {
+		t.Errorf("Authorize() error = %v, want ErrOAuthProviderNotFound", err)
 	}
 }
 
 func TestOAuthService_Callback_InvalidState(t *testing.T) {
-	providerStore := newMockProviderConfigStore()
+	configProvider := newMockConfigProvider()
 	oauthStateStore := newMockOAuthStateStore()
-	installStore := newMockInstallationStore()
-	factory := newTestConnectorFactory()
+	connStore := newMockConnectionStore()
+	handlerFactory := newMockOAuthHandlerFactory()
 
 	svc := NewOAuthService(OAuthServiceConfig{
-		ProviderConfigStore: providerStore,
+		ConfigProvider:      configProvider,
 		OAuthStateStore:     oauthStateStore,
-		InstallationStore:   installStore,
-		ConnectorFactory:    factory,
-		BaseURL:             "http://localhost:3000",
+		ConnectionStore:     connStore,
+		OAuthHandlerFactory: handlerFactory,
 	})
 
 	// Test callback with invalid state
@@ -366,17 +394,16 @@ func TestOAuthService_Callback_InvalidState(t *testing.T) {
 }
 
 func TestOAuthService_Callback_ProviderError(t *testing.T) {
-	providerStore := newMockProviderConfigStore()
+	configProvider := newMockConfigProvider()
 	oauthStateStore := newMockOAuthStateStore()
-	installStore := newMockInstallationStore()
-	factory := newTestConnectorFactory()
+	connStore := newMockConnectionStore()
+	handlerFactory := newMockOAuthHandlerFactory()
 
 	svc := NewOAuthService(OAuthServiceConfig{
-		ProviderConfigStore: providerStore,
+		ConfigProvider:      configProvider,
 		OAuthStateStore:     oauthStateStore,
-		InstallationStore:   installStore,
-		ConnectorFactory:    factory,
-		BaseURL:             "http://localhost:3000",
+		ConnectionStore:     connStore,
+		OAuthHandlerFactory: handlerFactory,
 	})
 
 	// Test callback with error from provider

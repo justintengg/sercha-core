@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
 )
 
 // Ensure OpenAIEmbedding implements EmbeddingService
@@ -171,7 +171,7 @@ func (e *OpenAIEmbedding) doRequest(ctx context.Context, reqBody embeddingReques
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

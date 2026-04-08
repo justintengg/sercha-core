@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
 )
 
 // Ensure Factory implements the interface.
@@ -55,8 +55,8 @@ func (f *Factory) Create(ctx context.Context, source *domain.Source, containerID
 		return nil, fmt.Errorf("%w: %s", domain.ErrUnsupportedProvider, source.ProviderType)
 	}
 
-	// Create token provider from installation
-	tokenProvider, err := f.tokenProviderFactory.Create(ctx, source.InstallationID)
+	// Create token provider from connection
+	tokenProvider, err := f.tokenProviderFactory.Create(ctx, source.ConnectionID)
 	if err != nil {
 		return nil, fmt.Errorf("create token provider: %w", err)
 	}

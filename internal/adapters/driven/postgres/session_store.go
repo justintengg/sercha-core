@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
 )
 
 // Verify interface compliance
@@ -180,7 +180,7 @@ func (s *SessionStore) ListByUser(ctx context.Context, userID string) ([]*domain
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessions []*domain.Session
 	for rows.Next() {

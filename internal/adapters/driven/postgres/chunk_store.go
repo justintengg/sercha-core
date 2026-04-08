@@ -5,15 +5,15 @@ import (
 	"database/sql"
 	"strings"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
 )
 
 // Verify interface compliance
 var _ driven.ChunkStore = (*ChunkStore)(nil)
 
 // ChunkStore implements driven.ChunkStore using PostgreSQL
-// Note: Embeddings are stored in Vespa, not here
+// Note: Embeddings are stored in the vector store (pgvector), not here
 type ChunkStore struct {
 	db *DB
 }
@@ -69,7 +69,7 @@ func (s *ChunkStore) SaveBatch(ctx context.Context, chunks []*domain.Chunk) erro
 		if err != nil {
 			return err
 		}
-		defer stmt.Close()
+		defer func() { _ = stmt.Close() }()
 
 		for _, chunk := range chunks {
 			_, err = stmt.ExecContext(ctx,
@@ -104,7 +104,7 @@ func (s *ChunkStore) GetByDocument(ctx context.Context, documentID string) ([]*d
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var chunks []*domain.Chunk
 	for rows.Next() {
@@ -165,7 +165,7 @@ func (s *ChunkStore) DeleteBySource(ctx context.Context, sourceID string) error 
 	return err
 }
 
-// GetChunkIDs returns all chunk IDs for a document (useful for Vespa cleanup)
+// GetChunkIDs returns all chunk IDs for a document (useful for search index cleanup)
 func (s *ChunkStore) GetChunkIDs(ctx context.Context, documentID string) ([]string, error) {
 	query := `SELECT id FROM chunks WHERE document_id = $1`
 
@@ -173,7 +173,7 @@ func (s *ChunkStore) GetChunkIDs(ctx context.Context, documentID string) ([]stri
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []string
 	for rows.Next() {
@@ -191,7 +191,7 @@ func (s *ChunkStore) GetChunkIDs(ctx context.Context, documentID string) ([]stri
 	return ids, nil
 }
 
-// GetChunkIDsBySource returns all chunk IDs for a source (useful for Vespa cleanup)
+// GetChunkIDsBySource returns all chunk IDs for a source (useful for search index cleanup)
 func (s *ChunkStore) GetChunkIDsBySource(ctx context.Context, sourceID string) ([]string, error) {
 	query := `SELECT id FROM chunks WHERE source_id = $1`
 
@@ -199,7 +199,7 @@ func (s *ChunkStore) GetChunkIDsBySource(ctx context.Context, sourceID string) (
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []string
 	for rows.Next() {

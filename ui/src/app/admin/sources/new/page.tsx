@@ -6,8 +6,6 @@ import Image from "next/image";
 import Link from "next/link";
 import {
   Loader2,
-  Eye,
-  EyeOff,
   CheckCircle2,
   XCircle,
   Search,
@@ -21,24 +19,23 @@ import { AdminLayout } from "@/components/layout";
 import {
   listProviders,
   listSources,
-  listInstallations,
-  saveProviderConfig,
+  listConnections,
+  getCapabilities,
   startOAuth,
-  getInstallation,
-  getInstallationContainers,
+  getConnection,
+  getConnectionContainers,
   createSource,
   ApiError,
   type ProviderListItem,
   type SourceSummary,
-  type InstallationSummary,
+  type ConnectionSummary,
   type Container,
 } from "@/lib/api";
-import { PROVIDER_ICONS, PROVIDER_HELP_URLS } from "@/lib/providers";
+import { PROVIDER_ICONS } from "@/lib/providers";
 
 type ViewState =
   | "selection"
-  | "credentials"
-  | "installation_picker"
+  | "connection_picker"
   | "connecting"
   | "select"
   | "creating"
@@ -58,15 +55,9 @@ function AddSourceWizardContent() {
   const [providers, setProviders] = useState<ProviderListItem[]>([]);
   const [pendingProvider, setPendingProvider] = useState<ProviderListItem | null>(null);
 
-  // Credentials state
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const [showSecret, setShowSecret] = useState(false);
-  const [isSavingCredentials, setIsSavingCredentials] = useState(false);
-
   // Installation & container state
-  const [selectedInstallation, setSelectedInstallation] = useState<InstallationSummary | null>(null);
-  const [existingInstallations, setExistingInstallations] = useState<InstallationSummary[]>([]);
+  const [selectedConnection, setSelectedInstallation] = useState<ConnectionSummary | null>(null);
+  const [existingConnections, setExistingInstallations] = useState<ConnectionSummary[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
   const [selectedContainers, setSelectedContainers] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
@@ -82,15 +73,23 @@ function AddSourceWizardContent() {
   useEffect(() => {
     const loadInitialData = async () => {
       try {
-        const providerList = await listProviders();
-        setProviders(providerList);
+        const [caps, providerList] = await Promise.all([
+          getCapabilities(),
+          listProviders(),
+        ]);
 
-        // Handle OAuth callback return (installation_id and provider come from URL)
-        const installationId = searchParams.get("installation_id");
+        // Filter providers to only show those configured in environment
+        const configuredProviders = providerList.filter((p) =>
+          caps.oauth_providers.includes(p.type)
+        );
+        setProviders(configuredProviders);
+
+        // Handle OAuth callback return (connection_id and provider come from URL)
+        const connectionId = searchParams.get("connection_id");
         const providerFromUrl = searchParams.get("provider");
 
-        if (installationId) {
-          await handleOAuthReturn(installationId, providerFromUrl || undefined, providerList);
+        if (connectionId) {
+          await handleOAuthReturn(connectionId, providerFromUrl || undefined, configuredProviders);
         }
       } catch {
         setProviders([]);
@@ -102,10 +101,10 @@ function AddSourceWizardContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadContainers = async (instId: string, parentId?: string) => {
+  const loadContainers = async (connId: string, parentId?: string) => {
     setIsLoadingContainers(true);
     try {
-      const result = await getInstallationContainers(instId, undefined, parentId);
+      const result = await getConnectionContainers(connId, undefined, parentId);
       setContainers(result.containers);
       // Only auto-select all on initial load (root level)
       if (!parentId && folderPath.length === 0) {
@@ -121,22 +120,22 @@ function AddSourceWizardContent() {
 
   // Navigate into a folder
   const handleDrillDown = async (container: Container) => {
-    if (!selectedInstallation || !container.has_children) return;
+    if (!selectedConnection || !container.has_children) return;
     setFolderPath([...folderPath, { id: container.id, name: container.name }]);
-    await loadContainers(selectedInstallation.id, container.id);
+    await loadContainers(selectedConnection.id, container.id);
   };
 
   // Navigate via breadcrumb
   const handleBreadcrumbClick = async (index: number) => {
-    if (!selectedInstallation) return;
+    if (!selectedConnection) return;
     if (index === -1) {
       // Go to root
       setFolderPath([]);
-      await loadContainers(selectedInstallation.id);
+      await loadContainers(selectedConnection.id);
     } else {
       const newPath = folderPath.slice(0, index + 1);
       setFolderPath(newPath);
-      await loadContainers(selectedInstallation.id, newPath[newPath.length - 1].id);
+      await loadContainers(selectedConnection.id, newPath[newPath.length - 1].id);
     }
   };
 
@@ -145,73 +144,35 @@ function AddSourceWizardContent() {
     setPendingProvider(provider);
     setError(null);
 
-    if (provider.configured) {
-      // Fetch existing installations for this provider
-      try {
-        const allInstallations = await listInstallations();
-        const providerInstallations = allInstallations.filter(
-          (i) => i.provider_type === provider.type
-        );
+    // Fetch existing installations for this provider
+    try {
+      const allConnections = await listConnections();
+      const providerConnections = allConnections.filter(
+        (i) => i.provider_type === provider.type
+      );
 
-        if (providerInstallations.length > 0) {
-          // Show picker to choose existing or connect new
-          setExistingInstallations(providerInstallations);
-          setView("installation_picker");
-        } else {
-          // No existing installations, go straight to OAuth
-          await startOAuthFlow(provider);
-        }
-      } catch {
-        // If fetch fails, just go to OAuth
+      if (providerConnections.length > 0) {
+        // Show picker to choose existing or connect new
+        setExistingInstallations(providerConnections);
+        setView("connection_picker");
+      } else {
+        // No existing installations, go straight to OAuth
         await startOAuthFlow(provider);
       }
-    } else {
-      // Need to collect credentials first
-      setClientId("");
-      setClientSecret("");
-      setView("credentials");
+    } catch {
+      // If fetch fails, just go to OAuth
+      await startOAuthFlow(provider);
     }
   };
 
   // Select an existing installation
-  const handleSelectExistingInstallation = async (installation: InstallationSummary) => {
+  const handleSelectExistingConnection = async (installation: ConnectionSummary) => {
     setSelectedInstallation(installation);
     await loadContainers(installation.id);
     setView("select");
   };
 
-  // Save credentials and start OAuth
-  const handleCredentialsSave = async () => {
-    if (!pendingProvider || !clientId || !clientSecret) return;
-
-    setIsSavingCredentials(true);
-    setError(null);
-
-    try {
-      await saveProviderConfig(pendingProvider.type, {
-        client_id: clientId,
-        client_secret: clientSecret,
-      });
-
-      // Update provider as configured
-      setProviders((prev) =>
-        prev.map((p) =>
-          p.type === pendingProvider.type ? { ...p, configured: true } : p
-        )
-      );
-
-      // Now start OAuth
-      await startOAuthFlow({ ...pendingProvider, configured: true });
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setError(err.message || "Failed to save credentials");
-      } else {
-        setError("Failed to save credentials. Please try again.");
-      }
-    } finally {
-      setIsSavingCredentials(false);
-    }
-  };
+  // Removed: credentials are now managed via environment variables
 
   // Start OAuth redirect
   const startOAuthFlow = async (provider: ProviderListItem) => {
@@ -236,10 +197,10 @@ function AddSourceWizardContent() {
   };
 
   // Handle OAuth callback return
-  const handleOAuthReturn = async (instId: string, providerType?: string, providerList?: ProviderListItem[]) => {
+  const handleOAuthReturn = async (connId: string, providerType?: string, providerList?: ProviderListItem[]) => {
     try {
-      const installation = await getInstallation(instId);
-      setSelectedInstallation(installation);
+      const connection = await getConnection(connId);
+      setSelectedInstallation(connection);
 
       // Set pending provider from URL params
       if (providerType) {
@@ -248,7 +209,7 @@ function AddSourceWizardContent() {
         if (provider) setPendingProvider(provider);
       }
 
-      await loadContainers(instId);
+      await loadContainers(connId);
       setView("select");
 
       // Clean up URL params
@@ -284,7 +245,7 @@ function AddSourceWizardContent() {
 
   // Create source
   const handleCreateSource = async () => {
-    if (!selectedInstallation || selectedContainers.size === 0) return;
+    if (!selectedConnection || selectedContainers.size === 0) return;
 
     setView("creating");
     setError(null);
@@ -294,7 +255,7 @@ function AddSourceWizardContent() {
       const existingSources = await listSources().catch(() => [] as SourceSummary[]);
 
       // Generate unique source name
-      const baseName = selectedInstallation.name;
+      const baseName = selectedConnection.name;
       const existingNames = new Set(existingSources.map((s) => s.name));
 
       let sourceName: string;
@@ -310,9 +271,9 @@ function AddSourceWizardContent() {
 
       await createSource({
         name: sourceName,
-        provider_type: selectedInstallation.provider_type,
-        installation_id: selectedInstallation.id,
-        selected_containers: Array.from(selectedContainers),
+        provider_type: selectedConnection.provider_type,
+        connection_id: selectedConnection.id,
+        containers: containers.filter((c) => selectedContainers.has(c.id)),
       });
       setCreatedSourceName(sourceName);
       setView("success");
@@ -336,26 +297,21 @@ function AddSourceWizardContent() {
     setSearchQuery("");
     setFolderPath([]);
     setError(null);
-    setClientId("");
-    setClientSecret("");
     setView("selection");
   };
 
   // Back navigation
   const handleBack = () => {
-    if (view === "credentials") {
-      setPendingProvider(null);
-      setView("selection");
-    } else if (view === "installation_picker") {
+    if (view === "connection_picker") {
       setPendingProvider(null);
       setExistingInstallations([]);
       setView("selection");
     } else if (view === "select") {
-      if (existingInstallations.length > 0) {
+      if (existingConnections.length > 0) {
         setSelectedInstallation(null);
         setContainers([]);
         setSelectedContainers(new Set());
-        setView("installation_picker");
+        setView("connection_picker");
       } else {
         handleAddAnother();
       }
@@ -489,7 +445,7 @@ function AddSourceWizardContent() {
   }
 
   // Installation picker view
-  if (view === "installation_picker") {
+  if (view === "connection_picker") {
     return (
       <AdminLayout title="Choose Account" description={`Select ${pendingProvider?.name} account`}>
         <div className="mx-auto max-w-lg">
@@ -521,15 +477,15 @@ function AddSourceWizardContent() {
             </div>
           </div>
 
-          {/* Existing installations */}
+          {/* Existing connections */}
           <div className="mb-6 space-y-3">
             <h3 className="text-sm font-medium text-sercha-fog-grey">
               Existing Connections
             </h3>
-            {existingInstallations.map((installation) => (
+            {existingConnections.map((installation) => (
               <button
                 key={installation.id}
-                onClick={() => handleSelectExistingInstallation(installation)}
+                onClick={() => handleSelectExistingConnection(installation)}
                 className="flex w-full items-center gap-3 rounded-lg border border-sercha-silverline bg-white p-4 text-left transition-all hover:border-sercha-indigo hover:shadow-md"
               >
                 <Image
@@ -567,153 +523,10 @@ function AddSourceWizardContent() {
     );
   }
 
-  // Credentials view
-  if (view === "credentials") {
-    return (
-      <AdminLayout title={`Configure ${pendingProvider?.name}`} description="Enter OAuth credentials">
-        <div className="mx-auto max-w-lg">
-          <button
-            onClick={handleBack}
-            className="mb-4 flex items-center gap-1 text-sm text-sercha-fog-grey hover:text-sercha-ink-slate"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back
-          </button>
-
-          <div className="mb-8 flex items-center gap-4">
-            {pendingProvider && (
-              <Image
-                src={PROVIDER_ICONS[pendingProvider.type] || "/icon.svg"}
-                alt={pendingProvider.name}
-                width={48}
-                height={48}
-                className="h-12 w-12"
-              />
-            )}
-            <div>
-              <h1 className="text-2xl font-semibold text-sercha-ink-slate">
-                Configure {pendingProvider?.name}
-              </h1>
-              <p className="mt-1 text-sm text-sercha-fog-grey">
-                Enter your OAuth app credentials to connect.
-              </p>
-            </div>
-          </div>
-
-          {/* Help Link */}
-          {pendingProvider && PROVIDER_HELP_URLS[pendingProvider.type] && (
-            <div className="mb-6 rounded-lg border border-sercha-indigo/20 bg-sercha-indigo/5 p-4">
-              <p className="text-sm text-sercha-fog-grey">
-                Need to create an OAuth app?{" "}
-                <a
-                  href={PROVIDER_HELP_URLS[pendingProvider.type]}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 font-medium text-sercha-indigo hover:underline"
-                >
-                  Open {pendingProvider.name} Developer Console
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </p>
-            </div>
-          )}
-
-          {/* OAuth Redirect URL Hint */}
-          <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
-            <p className="mb-1 text-sm font-medium text-amber-800">
-              OAuth Callback URL
-            </p>
-            <p className="mb-2 text-xs text-amber-700">
-              Set this as the &quot;Redirect URI&quot; or &quot;Callback URL&quot; in your OAuth app settings:
-            </p>
-            <code className="block rounded bg-amber-100 px-3 py-2 text-xs text-amber-900 break-all">
-              {typeof window !== "undefined"
-                ? `${window.location.origin.replace(":3000", ":8080")}/api/v1/oauth/callback`
-                : "http://localhost:8080/api/v1/oauth/callback"}
-            </code>
-          </div>
-
-          <div className="space-y-4">
-            {/* Client ID */}
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-sercha-ink-slate">
-                Client ID
-              </label>
-              <input
-                type="text"
-                value={clientId}
-                onChange={(e) => setClientId(e.target.value)}
-                className="w-full rounded-lg border border-sercha-silverline bg-white px-4 py-2.5 text-sm text-sercha-ink-slate placeholder:text-sercha-fog-grey focus:border-sercha-indigo focus:outline-none focus:ring-2 focus:ring-sercha-indigo/20"
-                placeholder="Enter client ID"
-                disabled={isSavingCredentials}
-              />
-            </div>
-
-            {/* Client Secret */}
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-sercha-ink-slate">
-                Client Secret
-              </label>
-              <div className="relative">
-                <input
-                  type={showSecret ? "text" : "password"}
-                  value={clientSecret}
-                  onChange={(e) => setClientSecret(e.target.value)}
-                  className="w-full rounded-lg border border-sercha-silverline bg-white px-4 py-2.5 pr-10 text-sm text-sercha-ink-slate placeholder:text-sercha-fog-grey focus:border-sercha-indigo focus:outline-none focus:ring-2 focus:ring-sercha-indigo/20"
-                  placeholder="Enter client secret"
-                  disabled={isSavingCredentials}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowSecret(!showSecret)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-sercha-fog-grey hover:text-sercha-ink-slate"
-                >
-                  {showSecret ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
-              </div>
-            </div>
-
-            {/* Error */}
-            {error && (
-              <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">
-                {error}
-              </div>
-            )}
-
-            {/* Buttons */}
-            <div className="flex gap-3 pt-2">
-              <button
-                onClick={handleBack}
-                disabled={isSavingCredentials}
-                className="flex-1 rounded-lg border border-sercha-silverline bg-white px-4 py-2.5 text-sm font-medium text-sercha-fog-grey transition-colors hover:bg-sercha-mist"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCredentialsSave}
-                disabled={isSavingCredentials || !clientId || !clientSecret}
-                className="flex flex-1 items-center justify-center rounded-lg bg-sercha-indigo px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-sercha-indigo/90 focus:outline-none focus:ring-2 focus:ring-sercha-indigo/50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isSavingCredentials ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  "Save & Connect"
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      </AdminLayout>
-    );
-  }
-
   // Container selection view
   if (view === "select") {
-    // Check provider type from selectedInstallation (more reliable than pendingProvider)
-    const providerType = selectedInstallation?.provider_type || pendingProvider?.type;
+    // Check provider type from selectedConnection (more reliable than pendingProvider)
+    const providerType = selectedConnection?.provider_type || pendingProvider?.type;
     const showFolderNavigation = providerType === "google_drive" || providerType === "onedrive";
 
     return (

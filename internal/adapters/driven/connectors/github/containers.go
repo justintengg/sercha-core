@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
 )
 
 // Ensure ContainerLister implements the interface.
@@ -52,14 +52,14 @@ func (l *ContainerLister) ListContainers(ctx context.Context, cursor string) ([]
 
 // ContainerListerFactory creates ContainerListers for GitHub installations.
 type ContainerListerFactory struct {
-	installationStore driven.InstallationStore
+	installationStore driven.ConnectionStore
 	tokenFactory      driven.TokenProviderFactory
 	baseURL           string
 }
 
 // NewContainerListerFactory creates a factory for GitHub container listers.
 func NewContainerListerFactory(
-	installationStore driven.InstallationStore,
+	installationStore driven.ConnectionStore,
 	tokenFactory driven.TokenProviderFactory,
 	baseURL string,
 ) *ContainerListerFactory {

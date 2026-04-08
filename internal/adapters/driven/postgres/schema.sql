@@ -1,6 +1,10 @@
 -- Sercha Core PostgreSQL Schema
 -- This schema is idempotent - can be run multiple times safely
 
+-- Enable pgvector extension for vector similarity search
+-- Note: Requires pgvector extension to be installed (pgvector/pgvector:pg16 Docker image)
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -46,8 +50,9 @@ CREATE TABLE IF NOT EXISTS settings (
     max_results_per_page INT NOT NULL DEFAULT 100,
     sync_interval_minutes INT NOT NULL DEFAULT 60,
     sync_enabled BOOLEAN NOT NULL DEFAULT true,
-    semantic_search_enabled BOOLEAN NOT NULL DEFAULT true,
+    semantic_search_enabled BOOLEAN NOT NULL DEFAULT true, -- DEPRECATED: use capability_preferences table
     auto_suggest_enabled BOOLEAN NOT NULL DEFAULT true,
+    sync_exclusions JSONB DEFAULT '{}' NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_by TEXT
 );
@@ -99,21 +104,18 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS idx_documents_source_id ON documents(source_id);
 CREATE INDEX IF NOT EXISTS idx_documents_external_id ON documents(external_id);
 
--- Chunks table (searchable chunks of documents)
--- Note: embeddings are stored in Vespa, not here
-CREATE TABLE IF NOT EXISTS chunks (
-    id TEXT PRIMARY KEY,
-    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    source_id TEXT NOT NULL,
-    content TEXT NOT NULL,
-    position INT NOT NULL,
-    start_char INT NOT NULL,
-    end_char INT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+-- Embeddings table (standalone, managed by pgvector adapter)
+-- Decoupled from chunks to avoid storing chunk text in postgres.
+-- The pgvector adapter creates this table via EnsureTable() on startup,
+-- but we define it here for reference and manual setup.
+CREATE TABLE IF NOT EXISTS embeddings (
+    chunk_id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    embedding vector(1536) NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_source_id ON chunks(source_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_document_id ON embeddings(document_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_vector ON embeddings USING hnsw (embedding vector_cosine_ops);
 
 -- Sync states table (tracks sync progress per source)
 CREATE TABLE IF NOT EXISTS sync_states (
@@ -145,16 +147,13 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run) WHERE enabled = true;
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_team_id ON scheduled_tasks(team_id);
 
--- Vespa config table (tracks Vespa connection and schema state)
-CREATE TABLE IF NOT EXISTS vespa_config (
+-- Capability preferences table (stores per-team capability preferences)
+CREATE TABLE IF NOT EXISTS capability_preferences (
     team_id TEXT PRIMARY KEY,
-    endpoint TEXT NOT NULL DEFAULT 'http://vespa:19071',
-    connected BOOLEAN NOT NULL DEFAULT false,
-    schema_mode TEXT,
-    embedding_dim INT,
-    embedding_provider TEXT,
-    schema_version TEXT,
-    connected_at TIMESTAMPTZ,
+    text_indexing_enabled BOOLEAN NOT NULL DEFAULT true,
+    embedding_indexing_enabled BOOLEAN NOT NULL DEFAULT false,
+    bm25_search_enabled BOOLEAN NOT NULL DEFAULT true,
+    vector_search_enabled BOOLEAN NOT NULL DEFAULT true,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -211,21 +210,34 @@ CREATE TABLE IF NOT EXISTS oauth_states (
     provider_type TEXT NOT NULL,
     code_verifier TEXT NOT NULL,
     redirect_uri TEXT NOT NULL,
+    return_context TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_oauth_states_expires ON oauth_states(expires_at);
 
--- Add installation_id and selected_containers to sources table
+-- Add connection_id and selected_containers to sources table
 -- Using DO block to handle idempotent column additions
 DO $$
 BEGIN
-    IF NOT EXISTS (
+    -- Handle legacy installation_id -> connection_id rename
+    IF EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'sources' AND column_name = 'installation_id'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'sources' AND column_name = 'connection_id'
     ) THEN
-        ALTER TABLE sources ADD COLUMN installation_id TEXT
+        ALTER TABLE sources RENAME COLUMN installation_id TO connection_id;
+    END IF;
+
+    -- Add connection_id if it doesn't exist
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'sources' AND column_name = 'connection_id'
+    ) THEN
+        ALTER TABLE sources ADD COLUMN connection_id TEXT
             REFERENCES connector_installations(id) ON DELETE SET NULL;
     END IF;
 
@@ -233,11 +245,24 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'sources' AND column_name = 'selected_containers'
     ) THEN
-        ALTER TABLE sources ADD COLUMN selected_containers TEXT[] DEFAULT '{}';
+        ALTER TABLE sources ADD COLUMN selected_containers JSONB DEFAULT '[]';
     END IF;
 END $$;
 
-CREATE INDEX IF NOT EXISTS idx_sources_installation_id ON sources(installation_id);
+-- Add sync_exclusions column to settings if it doesn't exist (migration)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'settings' AND column_name = 'sync_exclusions'
+    ) THEN
+        ALTER TABLE settings ADD COLUMN sync_exclusions JSONB DEFAULT '{}' NOT NULL;
+    END IF;
+END $$;
+
+-- Drop legacy index if it exists and create new one
+DROP INDEX IF EXISTS idx_sources_installation_id;
+CREATE INDEX IF NOT EXISTS idx_sources_connection_id ON sources(connection_id);
 
 -- Provider configurations (OAuth app credentials, API endpoints)
 -- One config per provider type. Multiple installations can use the same config.
@@ -253,3 +278,21 @@ CREATE TABLE IF NOT EXISTS provider_configs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Search queries table (for analytics and tracking)
+CREATE TABLE IF NOT EXISTS search_queries (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    query TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    result_count INT NOT NULL DEFAULT 0,
+    duration_ns BIGINT NOT NULL,
+    source_ids JSONB DEFAULT '[]',
+    has_filters BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_search_queries_team_id ON search_queries(team_id);
+CREATE INDEX IF NOT EXISTS idx_search_queries_created_at ON search_queries(created_at);
+CREATE INDEX IF NOT EXISTS idx_search_queries_team_created ON search_queries(team_id, created_at DESC);

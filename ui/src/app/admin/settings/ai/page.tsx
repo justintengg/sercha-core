@@ -16,11 +16,10 @@ import {
   updateAISettings,
   testAIConnection,
   getAIProviders,
-  deleteEmbeddingConfig,
-  deleteLLMConfig,
-  AISettingsResponse,
-  AIProviderConfig,
-  AIProvidersResponse,
+  getCapabilities,
+  type AISettingsResponse,
+  type AIProviderConfig,
+  type AIProvidersResponse,
 } from "@/lib/api";
 import { AIConfigWizard } from "@/components/settings/ai-config-wizard";
 
@@ -318,12 +317,23 @@ export default function AISettingsPage() {
     try {
       setLoading(true);
       setError(null);
-      const [aiData, providersData] = await Promise.all([
+      const [aiData, providersData, caps] = await Promise.all([
         getAISettings(),
         getAIProviders(),
+        getCapabilities(),
       ]);
       setAISettings(aiData);
-      setAIProviders(providersData);
+
+      // Filter providers to only show those configured in environment
+      const filteredProviders: AIProvidersResponse = {
+        embedding: providersData.embedding.filter((p) =>
+          caps.ai_providers.embedding.includes(p.id)
+        ),
+        llm: providersData.llm.filter((p) =>
+          caps.ai_providers.llm.includes(p.id)
+        ),
+      };
+      setAIProviders(filteredProviders);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load AI settings");
     } finally {
@@ -352,11 +362,13 @@ export default function AISettingsPage() {
   };
 
   const handleRemoveEmbedding = async () => {
-    await deleteEmbeddingConfig();
+    // Clear embedding config by setting empty provider
+    await updateAISettings({ embedding: { provider: "" as never, model: "" } });
   };
 
   const handleRemoveLLM = async () => {
-    await deleteLLMConfig();
+    // Clear LLM config by setting empty provider
+    await updateAISettings({ llm: { provider: "" as never, model: "" } });
   };
 
   if (loading) {

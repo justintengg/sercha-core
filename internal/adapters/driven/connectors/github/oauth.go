@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/custodia-labs/sercha-core/internal/adapters/driven/connectors"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/adapters/driven/connectors"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
 )
 
 // Ensure OAuthHandler implements the interface.
@@ -69,7 +69,7 @@ func (h *OAuthHandler) ExchangeCode(ctx context.Context, clientID, clientSecret,
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -131,7 +131,7 @@ func (h *OAuthHandler) RefreshToken(ctx context.Context, clientID, clientSecret,
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -183,7 +183,7 @@ func (h *OAuthHandler) GetUserInfo(ctx context.Context, accessToken string) (*dr
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

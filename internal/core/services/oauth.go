@@ -9,10 +9,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/custodia-labs/sercha-core/internal/adapters/driven/connectors"
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driving"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driving"
 )
 
 // Ensure oauthService implements OAuthService
@@ -20,63 +19,54 @@ var _ driving.OAuthService = (*oauthService)(nil)
 
 // OAuthServiceConfig holds configuration for the OAuth service.
 type OAuthServiceConfig struct {
-	// ProviderConfigStore retrieves OAuth app credentials.
-	ProviderConfigStore driven.ProviderConfigStore
+	// ConfigProvider retrieves OAuth app credentials from environment variables.
+	ConfigProvider driven.ConfigProvider
 
 	// OAuthStateStore manages OAuth flow state.
 	OAuthStateStore driven.OAuthStateStore
 
-	// InstallationStore persists connector installations.
-	InstallationStore driven.InstallationStore
+	// ConnectionStore persists connector installations.
+	ConnectionStore driven.ConnectionStore
 
-	// ConnectorFactory provides OAuth handlers per provider.
-	ConnectorFactory *connectors.Factory
-
-	// BaseURL is the application base URL for OAuth callbacks.
-	// Example: "https://app.example.com" or "http://localhost:3000"
-	BaseURL string
+	// OAuthHandlerFactory provides OAuth handlers per provider.
+	// Port interface - abstracts connector factory.
+	OAuthHandlerFactory driven.OAuthHandlerFactory
 }
 
 // oauthService implements the OAuthService interface.
 type oauthService struct {
-	providerConfigStore driven.ProviderConfigStore
+	configProvider      driven.ConfigProvider
 	oauthStateStore     driven.OAuthStateStore
-	installationStore   driven.InstallationStore
-	connectorFactory    *connectors.Factory
-	baseURL             string
+	installationStore   driven.ConnectionStore
+	oauthHandlerFactory driven.OAuthHandlerFactory
 }
 
 // NewOAuthService creates a new OAuth service.
 func NewOAuthService(cfg OAuthServiceConfig) driving.OAuthService {
 	return &oauthService{
-		providerConfigStore: cfg.ProviderConfigStore,
+		configProvider:      cfg.ConfigProvider,
 		oauthStateStore:     cfg.OAuthStateStore,
-		installationStore:   cfg.InstallationStore,
-		connectorFactory:    cfg.ConnectorFactory,
-		baseURL:             cfg.BaseURL,
+		installationStore:   cfg.ConnectionStore,
+		oauthHandlerFactory: cfg.OAuthHandlerFactory,
 	}
 }
 
 // Authorize starts an OAuth authorization flow.
 // It generates PKCE credentials, stores state, and returns the authorization URL.
 func (s *oauthService) Authorize(ctx context.Context, req driving.AuthorizeRequest) (*driving.AuthorizeResponse, error) {
-	// Get provider config to ensure it's configured
-	providerConfig, err := s.providerConfigStore.Get(ctx, req.ProviderType)
-	if err != nil {
-		return nil, fmt.Errorf("get provider config: %w", err)
-	}
-	if providerConfig == nil {
+	// Check if provider is configured via environment variables
+	if !s.configProvider.IsOAuthConfigured(req.ProviderType) {
 		return nil, driving.ErrOAuthProviderNotFound
 	}
-	if !providerConfig.Enabled {
-		return nil, driving.ErrOAuthProviderDisabled
-	}
-	if !providerConfig.IsConfigured() {
+
+	// Get OAuth credentials from config
+	credentials := s.configProvider.GetOAuthCredentials(req.ProviderType)
+	if credentials == nil {
 		return nil, driving.ErrOAuthProviderNotFound
 	}
 
 	// Get OAuth handler for the provider
-	oauthHandler := s.connectorFactory.GetOAuthHandler(req.ProviderType)
+	oauthHandler := s.oauthHandlerFactory.GetOAuthHandler(req.ProviderType)
 	if oauthHandler == nil {
 		return nil, driving.ErrOAuthProviderNotFound
 	}
@@ -95,7 +85,7 @@ func (s *oauthService) Authorize(ctx context.Context, req driving.AuthorizeReque
 	codeChallenge := generateCodeChallenge(codeVerifier)
 
 	// Build redirect URI
-	redirectURI := s.baseURL + "/api/v1/oauth/callback"
+	redirectURI := s.configProvider.GetBaseURL() + "/api/v1/oauth/callback"
 
 	// Get default scopes from handler
 	defaults := oauthHandler.DefaultConfig()
@@ -104,12 +94,13 @@ func (s *oauthService) Authorize(ctx context.Context, req driving.AuthorizeReque
 	// Store state for validation during callback
 	expiresAt := time.Now().Add(10 * time.Minute)
 	oauthState := &driven.OAuthState{
-		State:        state,
-		ProviderType: string(req.ProviderType),
-		CodeVerifier: codeVerifier,
-		RedirectURI:  redirectURI,
-		CreatedAt:    time.Now(),
-		ExpiresAt:    expiresAt,
+		State:         state,
+		ProviderType:  string(req.ProviderType),
+		CodeVerifier:  codeVerifier,
+		RedirectURI:   redirectURI,
+		ReturnContext: req.ReturnContext,
+		CreatedAt:     time.Now(),
+		ExpiresAt:     expiresAt,
 	}
 
 	if err := s.oauthStateStore.Save(ctx, oauthState); err != nil {
@@ -118,7 +109,7 @@ func (s *oauthService) Authorize(ctx context.Context, req driving.AuthorizeReque
 
 	// Build authorization URL
 	authURL := oauthHandler.BuildAuthURL(
-		providerConfig.Secrets.ClientID,
+		credentials.ClientID,
 		redirectURI,
 		state,
 		codeChallenge,
@@ -154,17 +145,19 @@ func (s *oauthService) Callback(ctx context.Context, req driving.CallbackRequest
 
 	providerType := domain.ProviderType(oauthState.ProviderType)
 
-	// Get provider config
-	providerConfig, err := s.providerConfigStore.Get(ctx, providerType)
-	if err != nil {
-		return nil, fmt.Errorf("get provider config: %w", err)
+	// Check if provider is still configured
+	if !s.configProvider.IsOAuthConfigured(providerType) {
+		return nil, driving.ErrOAuthProviderNotFound
 	}
-	if providerConfig == nil || !providerConfig.IsConfigured() {
+
+	// Get OAuth credentials from config
+	credentials := s.configProvider.GetOAuthCredentials(providerType)
+	if credentials == nil {
 		return nil, driving.ErrOAuthProviderNotFound
 	}
 
 	// Get OAuth handler
-	oauthHandler := s.connectorFactory.GetOAuthHandler(providerType)
+	oauthHandler := s.oauthHandlerFactory.GetOAuthHandler(providerType)
 	if oauthHandler == nil {
 		return nil, driving.ErrOAuthProviderNotFound
 	}
@@ -172,8 +165,8 @@ func (s *oauthService) Callback(ctx context.Context, req driving.CallbackRequest
 	// Exchange code for tokens
 	token, err := oauthHandler.ExchangeCode(
 		ctx,
-		providerConfig.Secrets.ClientID,
-		providerConfig.Secrets.ClientSecret,
+		credentials.ClientID,
+		credentials.ClientSecret,
 		req.Code,
 		oauthState.RedirectURI,
 		oauthState.CodeVerifier,
@@ -200,7 +193,7 @@ func (s *oauthService) Callback(ctx context.Context, req driving.CallbackRequest
 		return nil, fmt.Errorf("check existing installation: %w", err)
 	}
 
-	var installation *domain.Installation
+	var installation *domain.Connection
 	if existing != nil {
 		// Update existing installation with new tokens
 		var expiry *time.Time
@@ -209,7 +202,7 @@ func (s *oauthService) Callback(ctx context.Context, req driving.CallbackRequest
 			expiry = &t
 		}
 
-		err = s.installationStore.UpdateSecrets(ctx, existing.ID, &domain.InstallationSecrets{
+		err = s.installationStore.UpdateSecrets(ctx, existing.ID, &domain.ConnectionSecrets{
 			AccessToken:  token.AccessToken,
 			RefreshToken: token.RefreshToken,
 		}, expiry)
@@ -238,7 +231,7 @@ func (s *oauthService) Callback(ctx context.Context, req driving.CallbackRequest
 			expiry = &t
 		}
 
-		installation = &domain.Installation{
+		installation = &domain.Connection{
 			ID:             installationID,
 			Name:           name,
 			ProviderType:   providerType,
@@ -247,7 +240,7 @@ func (s *oauthService) Callback(ctx context.Context, req driving.CallbackRequest
 			OAuthTokenType: token.TokenType,
 			OAuthExpiry:    expiry,
 			OAuthScopes:    splitScopes(token.Scope),
-			Secrets: &domain.InstallationSecrets{
+			Secrets: &domain.ConnectionSecrets{
 				AccessToken:  token.AccessToken,
 				RefreshToken: token.RefreshToken,
 			},
@@ -270,8 +263,9 @@ func (s *oauthService) Callback(ctx context.Context, req driving.CallbackRequest
 	}
 
 	return &driving.CallbackResponse{
-		Installation: installation.ToSummary(),
-		Message:      fmt.Sprintf("Successfully connected to %s as %s", providerDisplayName(providerType), accountDisplay),
+		Installation:  installation.ToSummary(),
+		Message:       fmt.Sprintf("Successfully connected to %s as %s", providerDisplayName(providerType), accountDisplay),
+		ReturnContext: oauthState.ReturnContext,
 	}, nil
 }
 

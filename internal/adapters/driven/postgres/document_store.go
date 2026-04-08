@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
 )
 
 // Verify interface compliance
@@ -82,7 +82,7 @@ func (s *DocumentStore) SaveBatch(ctx context.Context, docs []*domain.Document) 
 		if err != nil {
 			return err
 		}
-		defer stmt.Close()
+		defer func() { _ = stmt.Close() }()
 
 		for _, doc := range docs {
 			metadataJSON, err := json.Marshal(doc.Metadata)
@@ -192,7 +192,7 @@ func (s *DocumentStore) GetBySource(ctx context.Context, sourceID string, limit,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanDocuments(rows)
 }
@@ -317,7 +317,7 @@ func (s *DocumentStore) ListExternalIDs(ctx context.Context, sourceID string) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []string
 	for rows.Next() {

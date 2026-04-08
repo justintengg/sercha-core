@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
 )
 
 // Verify interface compliance
@@ -73,7 +73,7 @@ func (s *SchedulerStore) ListScheduledTasks(ctx context.Context, teamID string) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanScheduledTasks(rows)
 }
@@ -140,7 +140,7 @@ func (s *SchedulerStore) GetDueScheduledTasks(ctx context.Context) ([]*domain.Sc
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanScheduledTasks(rows)
 }

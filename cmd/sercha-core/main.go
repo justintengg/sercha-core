@@ -5,7 +5,7 @@ package main
 // @description     Privacy-focused enterprise search API. Sercha Core provides full-text and semantic search across your connected data sources.
 
 // @contact.name   Sercha OSS
-// @contact.url    https://github.com/custodia-labs/sercha-core/issues
+// @contact.url    https://github.com/sercha-oss/sercha-core/issues
 
 // @license.name  Apache 2.0
 // @license.url   http://www.apache.org/licenses/LICENSE-2.0.html
@@ -21,40 +21,41 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/custodia-labs/sercha-core/internal/adapters/driven/ai"
-	"github.com/custodia-labs/sercha-core/internal/adapters/driven/auth"
-	"github.com/custodia-labs/sercha-core/internal/adapters/driven/connectors"
-	"github.com/custodia-labs/sercha-core/internal/adapters/driven/connectors/github"
-	"github.com/custodia-labs/sercha-core/internal/adapters/driven/connectors/localfs"
-	pipelineexec "github.com/custodia-labs/sercha-core/internal/adapters/driven/pipeline/executor"
-	pipelinereg "github.com/custodia-labs/sercha-core/internal/adapters/driven/pipeline/registry"
-	indexingstages "github.com/custodia-labs/sercha-core/internal/adapters/driven/pipeline/stages/indexing"
-	searchstages "github.com/custodia-labs/sercha-core/internal/adapters/driven/pipeline/stages/search"
-	"github.com/custodia-labs/sercha-core/internal/adapters/driven/postgres"
-	postgresqueue "github.com/custodia-labs/sercha-core/internal/adapters/driven/queue/postgres"
-	redisqueue "github.com/custodia-labs/sercha-core/internal/adapters/driven/queue/redis"
-	redisadapter "github.com/custodia-labs/sercha-core/internal/adapters/driven/redis"
-	"github.com/custodia-labs/sercha-core/internal/adapters/driven/vespa"
-	"github.com/custodia-labs/sercha-core/internal/adapters/driving/http"
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/domain/pipeline"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driving"
-	"github.com/custodia-labs/sercha-core/internal/core/services"
-	"github.com/custodia-labs/sercha-core/internal/normalisers"
-	"github.com/custodia-labs/sercha-core/internal/postprocessors"
-	"github.com/custodia-labs/sercha-core/internal/runtime"
-	"github.com/custodia-labs/sercha-core/internal/worker"
+	"github.com/sercha-oss/sercha-core/internal/adapters/driven/ai"
+	"github.com/sercha-oss/sercha-core/internal/adapters/driven/auth"
+	"github.com/sercha-oss/sercha-core/internal/adapters/driven/connectors"
+	"github.com/sercha-oss/sercha-core/internal/adapters/driven/connectors/github"
+	"github.com/sercha-oss/sercha-core/internal/adapters/driven/connectors/localfs"
+	"github.com/sercha-oss/sercha-core/internal/adapters/driven/opensearch"
+	"github.com/sercha-oss/sercha-core/internal/adapters/driven/pgvector"
+	pipelineexec "github.com/sercha-oss/sercha-core/internal/adapters/driven/pipeline/executor"
+	"github.com/sercha-oss/sercha-core/internal/adapters/driven/pipeline/providers"
+	pipelinereg "github.com/sercha-oss/sercha-core/internal/adapters/driven/pipeline/registry"
+	indexingstages "github.com/sercha-oss/sercha-core/internal/adapters/driven/pipeline/stages/indexing"
+	searchstages "github.com/sercha-oss/sercha-core/internal/adapters/driven/pipeline/stages/search"
+	"github.com/sercha-oss/sercha-core/internal/adapters/driven/postgres"
+	postgresqueue "github.com/sercha-oss/sercha-core/internal/adapters/driven/queue/postgres"
+	redisqueue "github.com/sercha-oss/sercha-core/internal/adapters/driven/queue/redis"
+	redisadapter "github.com/sercha-oss/sercha-core/internal/adapters/driven/redis"
+	"github.com/sercha-oss/sercha-core/internal/adapters/driving/http"
+	"github.com/sercha-oss/sercha-core/internal/config"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/domain/pipeline"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driving"
+	"github.com/sercha-oss/sercha-core/internal/core/services"
+	"github.com/sercha-oss/sercha-core/internal/normalisers"
+	"github.com/sercha-oss/sercha-core/internal/runtime"
+	"github.com/sercha-oss/sercha-core/internal/worker"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -69,29 +70,6 @@ func (r *redisPinger) Ping(ctx context.Context) error {
 	return r.client.Ping(ctx).Err()
 }
 
-// capabilityProvider wraps a service as a capability provider
-type capabilityProvider struct {
-	capType         pipeline.CapabilityType
-	id              string
-	instance        any
-	avail           func() bool
-	instanceResolver func() any // Optional: resolve instance dynamically
-}
-
-func (p *capabilityProvider) Type() pipeline.CapabilityType { return p.capType }
-func (p *capabilityProvider) ID() string                    { return p.id }
-func (p *capabilityProvider) Instance() any {
-	if p.instanceResolver != nil {
-		return p.instanceResolver()
-	}
-	return p.instance
-}
-func (p *capabilityProvider) Available() bool {
-	if p.avail == nil {
-		return p.Instance() != nil
-	}
-	return p.avail()
-}
 
 func main() {
 	// Get run mode: environment variable takes precedence, command arg as fallback
@@ -105,20 +83,18 @@ func main() {
 
 	log.Printf("sercha-core %s starting in %s mode", version, mode)
 
-	// Configuration from environment
+	// Load configuration from environment
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Runtime configuration
 	port := getEnvInt("PORT", 8080)
-	databaseURL := getEnv("DATABASE_URL", "postgres://sercha:sercha_dev@localhost:5432/sercha?sslmode=disable")
 	redisURL := getEnv("REDIS_URL", "")
-	vespaConfigURL := getEnv("VESPA_CONFIG_URL", "http://localhost:19071")      // Config server (deployment)
-	vespaContainerURL := getEnv("VESPA_CONTAINER_URL", "http://localhost:8080") // Container cluster (document/search API)
-	baseURL := getEnv("BASE_URL", fmt.Sprintf("http://localhost:%d", port))
 
 	// Single org
 	const teamID = "default"
-
-	// JWT secret and encryption key - auto-derived if not set
-	jwtSecret := getOrGenerateSecret("JWT_SECRET", databaseURL)
-	masterKey := getMasterKey(jwtSecret)
 
 	// Setup context with cancellation for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -136,7 +112,7 @@ func main() {
 	// ===== Initialize PostgreSQL =====
 	log.Println("Connecting to PostgreSQL...")
 	dbConfig := postgres.Config{
-		URL:             databaseURL,
+		URL:             cfg.DatabaseURL,
 		MaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 25),
 		MaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 5),
 		ConnMaxLifetime: time.Duration(getEnvInt("DB_CONN_MAX_LIFETIME_SEC", 300)) * time.Second,
@@ -146,7 +122,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Initialize schema (idempotent)
 	if err := db.InitSchema(ctx); err != nil {
@@ -166,21 +142,69 @@ func main() {
 		if err := redisClient.Ping(ctx).Err(); err != nil {
 			log.Fatalf("Failed to connect to Redis: %v", err)
 		}
-		defer redisClient.Close()
+		defer func() { _ = redisClient.Close() }()
 		log.Println("Redis connected")
 	}
 
-	// ===== Initialize Vespa =====
-	log.Println("Connecting to Vespa...")
-	searchEngine := vespa.NewSearchEngine(vespa.DefaultConfig(vespaContainerURL))
-	if err := searchEngine.HealthCheck(ctx); err != nil {
-		log.Printf("Warning: Vespa health check failed: %v (search may not work)", err)
+	// ===== Search Engine (OpenSearch if configured) =====
+	var searchEngine driven.SearchEngine = nil
+	if cfg.OpenSearchURL != "" {
+		log.Println("Initializing OpenSearch search engine...")
+		osConfig := opensearch.DefaultConfig()
+		osConfig.URL = cfg.OpenSearchURL
+		osEngine, err := opensearch.NewSearchEngine(osConfig)
+		if err != nil {
+			log.Fatalf("Failed to initialize OpenSearch: %v", err)
+		}
+		// Verify connectivity
+		if err := osEngine.HealthCheck(ctx); err != nil {
+			log.Printf("Warning: OpenSearch health check failed: %v", err)
+		} else {
+			searchEngine = osEngine
+			cfg.SearchEngineAvailable = true
+			log.Printf("OpenSearch connected: %s", cfg.OpenSearchURL)
+		}
 	} else {
-		log.Println("Vespa connected")
+		log.Println("Search engine: disabled (OPENSEARCH_URL not configured)")
+	}
+
+	// ===== Vector Index (pgvector if configured) =====
+	var vectorIndex driven.VectorIndex = nil
+	var pgvectorAdapter *pgvector.VectorIndex = nil
+	if cfg.PgvectorURL != "" {
+		log.Println("Initializing pgvector vector index...")
+		pgvConfig := pgvector.DefaultConfig()
+		pgvConfig.URL = cfg.PgvectorURL
+		pgvConfig.Dimensions = cfg.PgvectorDimensions
+		var err error
+		pgvectorAdapter, err = pgvector.New(ctx, pgvConfig)
+		if err != nil {
+			log.Fatalf("Failed to initialize pgvector: %v", err)
+		}
+		// Verify connectivity and vector extension
+		if err := pgvectorAdapter.HealthCheck(ctx); err != nil {
+			log.Printf("Warning: pgvector health check failed: %v", err)
+			pgvectorAdapter.Close()
+			pgvectorAdapter = nil
+		} else {
+			// Ensure the embeddings table exists
+			if err := pgvectorAdapter.EnsureTable(ctx); err != nil {
+				log.Fatalf("Failed to ensure pgvector embeddings table: %v", err)
+			}
+			vectorIndex = pgvectorAdapter
+			cfg.VectorStoreAvailable = true
+			log.Printf("pgvector connected: %s (dimensions: %d)", cfg.PgvectorURL, cfg.PgvectorDimensions)
+		}
+	} else {
+		log.Println("Vector index: disabled (PGVECTOR_URL not configured)")
+	}
+	// Ensure pgvector is closed on shutdown
+	if pgvectorAdapter != nil {
+		defer pgvectorAdapter.Close()
 	}
 
 	// ===== Driven adapters (infrastructure) =====
-	authAdapter := auth.NewAdapter(jwtSecret)
+	authAdapter := auth.NewAdapter(cfg.JWTSecret)
 	aiFactory := ai.NewFactory()
 
 	// ===== PostgreSQL Stores =====
@@ -191,10 +215,8 @@ func main() {
 	syncStore := postgres.NewSyncStateStore(db)
 	settingsStore := postgres.NewSettingsStore(db)
 	schedulerStore := postgres.NewSchedulerStore(db)
-	vespaConfigStore := postgres.NewVespaConfigStore(db)
-
-	// ===== Vespa Deployer =====
-	vespaDeployer := vespa.NewDeployer()
+	capabilityStore := postgres.NewCapabilityStore(db)
+	searchQueryRepo := postgres.NewSearchQueryRepository(db)
 
 	// ===== Session Store (Redis if available, otherwise PostgreSQL) =====
 	var sessionStore driven.SessionStore
@@ -232,35 +254,30 @@ func main() {
 
 	// ===== Connector Infrastructure =====
 	var connectorFactory driven.ConnectorFactory
-	var installationStore driven.InstallationStore
+	var installationStore driven.ConnectionStore
 	var oauthStateStore driven.OAuthStateStore
-	var providerConfigStore driven.ProviderConfigStore
 
 	// Create secret encryptor (shared by all stores that encrypt secrets)
-	encryptor, err := postgres.NewSecretEncryptor(masterKey)
+	encryptor, err := postgres.NewSecretEncryptor(cfg.MasterKey)
 	if err != nil {
 		log.Fatalf("Failed to create secret encryptor: %v", err)
 	}
 
 	// Create stores
-	installationStore = postgres.NewInstallationStore(db.DB, encryptor)
-	providerConfigStore = postgres.NewProviderConfigStore(db.DB, encryptor)
+	installationStore = postgres.NewConnectionStore(db.DB, encryptor)
 	oauthStateStore = postgres.NewOAuthStateStore(db.DB)
 
 	// Create token provider factory
 	tokenProviderFactory := auth.NewTokenProviderFactory(installationStore)
 
 	// Register token refreshers for each provider type
-	// These dynamically load OAuth credentials from provider_configs table
+	// These use OAuth credentials from environment variables via ConfigProvider
 	tokenProviderFactory.RegisterRefresher(domain.ProviderTypeGitHub, func(ctx context.Context, refreshToken string) (*driven.OAuthToken, error) {
-		cfg, err := providerConfigStore.Get(ctx, domain.ProviderTypeGitHub)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get github provider config: %w", err)
+		creds := cfg.GetOAuthCredentials(domain.ProviderTypeGitHub)
+		if creds == nil {
+			return nil, fmt.Errorf("github provider not configured - set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET")
 		}
-		if cfg == nil || cfg.Secrets == nil || cfg.Secrets.ClientID == "" {
-			return nil, fmt.Errorf("github provider not configured - use POST /api/v1/providers/github/config")
-		}
-		return github.NewOAuthHandler().RefreshToken(ctx, cfg.Secrets.ClientID, cfg.Secrets.ClientSecret, refreshToken)
+		return github.NewOAuthHandler().RefreshToken(ctx, creds.ClientID, creds.ClientSecret, refreshToken)
 	})
 
 	// Create connector factory
@@ -279,7 +296,10 @@ func main() {
 
 	connectorFactory = factory
 	log.Printf("Connector infrastructure initialized (providers: %v)", factory.SupportedTypes())
-	log.Printf("  OAuth callback URL: %s/api/v1/oauth/callback", baseURL)
+	log.Printf("  OAuth callback URL: %s/api/v1/oauth/callback", cfg.BaseURL)
+
+	// Create OAuth handler factory adapter
+	oauthHandlerFactory := connectors.NewOAuthHandlerFactory(factory)
 
 	// Create container lister factory for installation management
 	containerListerFactory := connectors.NewContainerListerFactory()
@@ -301,7 +321,6 @@ func main() {
 
 	// Initialize registries (shared across all modes)
 	normaliserRegistry := normalisers.DefaultRegistry()
-	postProcessorPipeline := postprocessors.DefaultPipeline()
 
 	// ===== Pipeline Infrastructure =====
 	log.Println("Initializing pipeline infrastructure...")
@@ -318,8 +337,11 @@ func main() {
 	if err := stageRegistry.Register(indexingstages.NewEmbedderFactory()); err != nil {
 		log.Fatalf("Failed to register embedder stage: %v", err)
 	}
-	if err := stageRegistry.Register(indexingstages.NewLoaderFactory()); err != nil {
-		log.Fatalf("Failed to register loader stage: %v", err)
+	if err := stageRegistry.Register(indexingstages.NewDocLoaderFactory()); err != nil {
+		log.Fatalf("Failed to register doc-loader stage: %v", err)
+	}
+	if err := stageRegistry.Register(indexingstages.NewVectorLoaderFactory()); err != nil {
+		log.Fatalf("Failed to register vector-loader stage: %v", err)
 	}
 
 	// Register search stage factories
@@ -343,29 +365,47 @@ func main() {
 	}
 
 	// Register capability providers
-	// Vector store (Vespa) - always available
-	if err := capabilityRegistry.Register(&capabilityProvider{
-		capType:  pipeline.CapabilityVectorStore,
-		id:       "vespa",
-		instance: searchEngine,
-		avail:    func() bool { return true },
-	}); err != nil {
-		log.Fatalf("Failed to register vector store capability: %v", err)
-	}
-
 	// Embedder - dynamically available via runtimeServices
 	// The instance is resolved at runtime when needed
-	if err := capabilityRegistry.Register(&capabilityProvider{
-		capType: pipeline.CapabilityEmbedder,
-		id:      "default",
-		instanceResolver: func() any {
+	if err := capabilityRegistry.Register(&providers.CapabilityProvider{
+		CapType:    pipeline.CapabilityEmbedder,
+		ProviderID: "default",
+		InstanceResolver: func() any {
 			return runtimeServices.EmbeddingService()
 		},
-		avail: func() bool {
+		AvailFn: func() bool {
 			return runtimeServices.EmbeddingService() != nil
 		},
 	}); err != nil {
 		log.Fatalf("Failed to register embedder capability: %v", err)
+	}
+
+	// SearchEngine - OpenSearch if configured
+	if searchEngine != nil {
+		if err := capabilityRegistry.Register(&providers.CapabilityProvider{
+			CapType:    pipeline.CapabilitySearchEngine,
+			ProviderID: "opensearch",
+			Inst:       searchEngine,
+			AvailFn:    func() bool { return true },
+		}); err != nil {
+			log.Fatalf("Failed to register opensearch capability: %v", err)
+		}
+		log.Println("Registered opensearch as search_engine capability")
+	}
+
+	// VectorStore - pgvector if configured
+	if vectorIndex != nil {
+		if err := capabilityRegistry.Register(&providers.CapabilityProvider{
+			CapType:    pipeline.CapabilityVectorStore,
+			ProviderID: "pgvector",
+			Inst:       vectorIndex,
+			AvailFn: func() bool {
+				return vectorIndex != nil
+			},
+		}); err != nil {
+			log.Fatalf("Failed to register pgvector capability: %v", err)
+		}
+		log.Println("Registered pgvector as vector_store capability")
 	}
 
 	// Register default indexing pipeline
@@ -374,9 +414,10 @@ func main() {
 		Name: "Default Indexing Pipeline",
 		Type: pipeline.PipelineTypeIndexing,
 		Stages: []pipeline.StageConfig{
-			{StageID: "chunker", Enabled: true, Parameters: map[string]any{"chunk_size": 512}},
+			{StageID: "doc-loader", Enabled: true},
+			{StageID: "chunker", Enabled: true, Parameters: map[string]any{"chunk_size": 1024, "chunk_overlap": 100}},
 			{StageID: "embedder", Enabled: true},
-			{StageID: "loader", Enabled: true},
+			{StageID: "vector-loader", Enabled: true},
 		},
 	}
 	if err := pipelineRegistry.Register(indexingPipeline); err != nil {
@@ -386,29 +427,32 @@ func main() {
 		log.Fatalf("Failed to set default indexing pipeline: %v", err)
 	}
 
-	// Register default search pipeline (BM25-only, no embedding required)
-	searchPipelineBM25 := pipeline.PipelineDefinition{
-		ID:   "default-search-bm25",
-		Name: "Default Search Pipeline (BM25)",
+	// Register default search pipeline with all retriever variants.
+	// applyPreferences enables exactly one retriever based on the requested search mode.
+	searchPipeline := pipeline.PipelineDefinition{
+		ID:   "default-search",
+		Name: "Default Search Pipeline",
 		Type: pipeline.PipelineTypeSearch,
 		Stages: []pipeline.StageConfig{
 			{StageID: "query-parser", Enabled: true},
 			{StageID: "bm25-retriever", Enabled: true, Parameters: map[string]any{"top_k": 100}},
+			{StageID: "vector-retriever", Enabled: true, Parameters: map[string]any{"top_k": 100}},
+			{StageID: "hybrid-retriever", Enabled: true, Parameters: map[string]any{"top_k": 100}},
 			{StageID: "ranker", Enabled: true, Parameters: map[string]any{"limit": 20}},
 			{StageID: "presenter", Enabled: true, Parameters: map[string]any{"snippet_length": 200}},
 		},
 	}
-	if err := pipelineRegistry.Register(searchPipelineBM25); err != nil {
+	if err := pipelineRegistry.Register(searchPipeline); err != nil {
 		log.Fatalf("Failed to register search pipeline: %v", err)
 	}
-	if err := pipelineRegistry.SetDefault(pipeline.PipelineTypeSearch, "default-search-bm25"); err != nil {
+	if err := pipelineRegistry.SetDefault(pipeline.PipelineTypeSearch, "default-search"); err != nil {
 		log.Fatalf("Failed to set default search pipeline: %v", err)
 	}
 
 	// Create pipeline builder and executors
 	pipelineBuilder := pipelineexec.NewPipelineBuilder(stageRegistry)
-	indexingExecutor := pipelineexec.NewIndexingExecutor(pipelineBuilder, pipelineRegistry, capabilityRegistry, nil)
-	searchExecutor := pipelineexec.NewSearchExecutor(pipelineBuilder, pipelineRegistry, capabilityRegistry)
+	indexingExecutor := pipelineexec.NewIndexingExecutor(pipelineBuilder, pipelineRegistry, capabilityRegistry, nil, stageRegistry)
+	searchExecutor := pipelineexec.NewSearchExecutor(pipelineBuilder, pipelineRegistry, capabilityRegistry, stageRegistry)
 
 	log.Println("Pipeline infrastructure initialized")
 
@@ -417,32 +461,54 @@ func main() {
 	userService := services.NewUserService(userStore, sessionStore, authAdapter, teamID)
 	sourceService := services.NewSourceService(sourceStore, documentStore, syncStore, searchEngine)
 	documentService := services.NewDocumentService(documentStore, chunkStore)
-	searchService := services.NewSearchService(searchEngine, documentStore, runtimeServices, searchExecutor, nil)
-	settingsService := services.NewSettingsService(settingsStore, aiFactory, runtimeServices, teamID)
-	vespaAdminService := services.NewVespaAdminService(vespaDeployer, vespaConfigStore, settingsStore, searchEngine, runtimeServices, teamID, vespaConfigURL)
+	searchService := services.NewSearchService(searchEngine, documentStore, runtimeServices, searchExecutor, capabilityStore, settingsStore, teamID)
+	settingsService := services.NewSettingsService(settingsStore, aiFactory, cfg, runtimeServices, teamID)
 
-	// Provider service (only available when MASTER_KEY is set)
-	var providerService driving.ProviderService
-	if providerConfigStore != nil {
-		providerService = services.NewProviderService(providerConfigStore)
+	// Restore AI services from saved settings (embedding, LLM)
+	// This ensures services are available after a restart without requiring
+	// the user to re-configure via the API.
+	if err := settingsService.RestoreAIServices(ctx); err != nil {
+		log.Printf("Warning: failed to restore AI services: %v", err)
+	} else {
+		if runtimeServices.EmbeddingService() != nil {
+			log.Println("Restored embedding service from saved settings")
+		}
+		if runtimeServices.LLMService() != nil {
+			log.Println("Restored LLM service from saved settings")
+		}
 	}
+
+	setupService := services.NewSetupService(userStore, sourceStore, teamID)
+
+	// Provider service (shows configuration status based on env vars)
+	providerService := services.NewProviderService(cfg)
+
+	// Capabilities service
+	capabilitiesService := services.NewCapabilitiesService(cfg, capabilityStore)
 
 	// OAuth service (handles OAuth flows for connector installations)
 	oauthService := services.NewOAuthService(services.OAuthServiceConfig{
-		ProviderConfigStore: providerConfigStore,
+		ConfigProvider:      cfg,
+		OAuthHandlerFactory: oauthHandlerFactory,
 		OAuthStateStore:     oauthStateStore,
-		InstallationStore:   installationStore,
-		ConnectorFactory:    factory,
-		BaseURL:             baseURL,
+		ConnectionStore:     installationStore,
 	})
 
-	// Installation service (manages connector installations)
-	installationService := services.NewInstallationService(services.InstallationServiceConfig{
-		InstallationStore:      installationStore,
+	// Connection service (manages connector connections)
+	connectionService := services.NewConnectionService(services.ConnectionServiceConfig{
+		ConnectionStore:        installationStore,
 		SourceStore:            sourceStore,
 		ContainerListerFactory: containerListerFactory,
 		TokenProviderFactory:   tokenProviderFactory,
 	})
+
+	// Admin service (admin dashboard operations)
+	adminService := services.NewAdminService(
+		taskQueue,
+		schedulerStore,
+		searchQueryRepo,
+		sourceStore,
+	)
 
 	// Log startup configuration
 	log.Printf("Runtime config: session_backend=%s, embedding=%t, llm=%t, search_mode=%s",
@@ -458,13 +524,16 @@ func main() {
 		ChunkStore:       chunkStore,
 		SyncStore:        syncStore,
 		SearchEngine:     searchEngine,
+		VectorIndex:      vectorIndex,
 		ConnectorFactory: connectorFactory,
 		NormaliserReg:    normaliserRegistry,
-		LegacyPipeline:   postProcessorPipeline,
 		Services:         runtimeServices,
 		Logger:           slog.Default(),
 		IndexingExecutor: indexingExecutor,
 		CapabilitySet:    nil, // Built per-execution by executor
+		CapabilityStore:  capabilityStore,
+		SettingsStore:    settingsStore,
+		TeamID:           teamID,
 	})
 
 	// Create scheduler for worker mode (if enabled)
@@ -492,7 +561,7 @@ func main() {
 		if redisClient != nil {
 			redisPing = &redisPinger{client: redisClient}
 		}
-		runAPI(port, authService, userService, searchService, sourceService, documentService, settingsService, vespaAdminService, providerService, oauthService, installationService, syncOrchestrator, taskQueue, db, redisPing)
+		runAPI(port, authService, userService, searchService, sourceService, documentService, settingsService, providerService, oauthService, connectionService, syncOrchestrator, capabilitiesService, setupService, adminService, taskQueue, searchQueryRepo, db, redisPing)
 
 	case "worker":
 		// Worker-only mode: Task processing, scheduler, no HTTP server
@@ -507,7 +576,7 @@ func main() {
 		if redisClient != nil {
 			redisPing = &redisPinger{client: redisClient}
 		}
-		runAPI(port, authService, userService, searchService, sourceService, documentService, settingsService, vespaAdminService, providerService, oauthService, installationService, syncOrchestrator, taskQueue, db, redisPing)
+		runAPI(port, authService, userService, searchService, sourceService, documentService, settingsService, providerService, oauthService, connectionService, syncOrchestrator, capabilitiesService, setupService, adminService, taskQueue, searchQueryRepo, db, redisPing)
 
 	default:
 		log.Fatalf("Unknown mode: %s (use: api, worker, or all)", mode)
@@ -522,19 +591,26 @@ func runAPI(
 	sourceService driving.SourceService,
 	documentService driving.DocumentService,
 	settingsService driving.SettingsService,
-	vespaAdminService driving.VespaAdminService,
 	providerService driving.ProviderService,
 	oauthService driving.OAuthService,
-	installationService driving.InstallationService,
+	connectionService driving.ConnectionService,
 	syncOrchestrator driving.SyncOrchestrator,
+	capabilitiesService driving.CapabilitiesService,
+	setupService driving.SetupService,
+	adminService driving.AdminService,
 	taskQueue driven.TaskQueue,
+	searchQueryRepo driven.SearchQueryRepository,
 	db http.Pinger,
 	redisClient http.Pinger, // can be nil
 ) {
+	// Parse CORS origins from environment variable
+	corsOrigins := parseCORSOrigins(getEnv("CORS_ORIGINS", "*"))
+
 	cfg := http.Config{
-		Host:    "0.0.0.0",
-		Port:    port,
-		Version: version,
+		Host:        "0.0.0.0",
+		Port:        port,
+		Version:     version,
+		CORSOrigins: corsOrigins,
 	}
 
 	server := http.NewServer(
@@ -545,12 +621,15 @@ func runAPI(
 		sourceService,
 		documentService,
 		settingsService,
-		vespaAdminService,
 		providerService,
 		oauthService,
-		installationService,
+		connectionService,
 		syncOrchestrator,
+		capabilitiesService,
+		setupService,
+		adminService,
 		taskQueue,
+		searchQueryRepo,
 		db,
 		redisClient,
 	)
@@ -626,34 +705,18 @@ func getEnvBool(key string, defaultValue bool) bool {
 	return defaultValue
 }
 
-// getOrGenerateSecret returns the JWT secret from env var or derives one from database URL.
-// This allows the app to "just work" without requiring explicit configuration.
-// The derived secret is stable across restarts (based on database URL).
-func getOrGenerateSecret(envKey, databaseURL string) string {
-	if secret := os.Getenv(envKey); secret != "" {
-		return secret
+func parseCORSOrigins(value string) []string {
+	if value == "" {
+		return nil
 	}
-
-	// Derive a stable secret from database URL - unique per installation
-	hash := sha256.Sum256([]byte("sercha-jwt-secret:" + databaseURL))
-	derived := hex.EncodeToString(hash[:])
-	log.Printf("Note: %s not set, using auto-derived secret (stable across restarts)", envKey)
-	return derived
-}
-
-// getMasterKey returns a 32-byte encryption key for secrets.
-// If MASTER_KEY env var is set (64 hex chars), it's decoded and used directly.
-// Otherwise, derives a key from JWT_SECRET using SHA-256.
-func getMasterKey(jwtSecret string) []byte {
-	if masterKeyHex := os.Getenv("MASTER_KEY"); masterKeyHex != "" {
-		masterKey, err := hex.DecodeString(masterKeyHex)
-		if err != nil || len(masterKey) != 32 {
-			log.Fatalf("MASTER_KEY must be 64 hex characters (32 bytes): got %d bytes", len(masterKey))
+	// Split by comma and trim whitespace
+	parts := strings.Split(value, ",")
+	origins := []string{}
+	for _, part := range parts {
+		origin := strings.TrimSpace(part)
+		if origin != "" {
+			origins = append(origins, origin)
 		}
-		return masterKey
 	}
-
-	// Derive from JWT_SECRET
-	hash := sha256.Sum256([]byte("sercha-master-key:" + jwtSecret))
-	return hash[:]
+	return origins
 }

@@ -3,18 +3,18 @@ package driving
 import (
 	"context"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
 )
 
 // UpdateSettingsRequest represents a request to update settings
 // Note: AI configuration is managed via UpdateAISettingsRequest and /settings/ai endpoint
+// Note: Semantic/vector search is now controlled via CapabilityPreferences
 type UpdateSettingsRequest struct {
-	DefaultSearchMode     *domain.SearchMode `json:"default_search_mode,omitempty"`
-	ResultsPerPage        *int               `json:"results_per_page,omitempty"`
-	SyncIntervalMinutes   *int               `json:"sync_interval_minutes,omitempty"`
-	SyncEnabled           *bool              `json:"sync_enabled,omitempty"`
-	SemanticSearchEnabled *bool              `json:"semantic_search_enabled,omitempty"`
-	AutoSuggestEnabled    *bool              `json:"auto_suggest_enabled,omitempty"`
+	DefaultSearchMode   *domain.SearchMode              `json:"default_search_mode,omitempty"`
+	ResultsPerPage      *int                            `json:"results_per_page,omitempty"`
+	SyncIntervalMinutes *int                            `json:"sync_interval_minutes,omitempty"`
+	SyncEnabled         *bool                           `json:"sync_enabled,omitempty"`
+	SyncExclusions      *domain.SyncExclusionSettings   `json:"sync_exclusions,omitempty"`
 }
 
 // SettingsService manages team-wide settings (admin only)
@@ -37,6 +37,12 @@ type SettingsService interface {
 
 	// TestConnection tests the AI provider connection
 	TestConnection(ctx context.Context) error
+
+	// GetAIProviders returns static metadata about available AI providers
+	GetAIProviders(ctx context.Context) (*AIProvidersResponse, error)
+
+	// RestoreAIServices restores AI services from persisted settings on startup.
+	RestoreAIServices(ctx context.Context) error
 }
 
 // UpdateAISettingsRequest represents a request to update AI settings
@@ -45,38 +51,25 @@ type UpdateAISettingsRequest struct {
 	LLM       *LLMSettingsInput       `json:"llm,omitempty"`
 }
 
-// EmbeddingSettingsInput is the input for embedding configuration
+// EmbeddingSettingsInput is the input for embedding configuration.
+// API keys and base URLs come from environment variables, not request input.
 type EmbeddingSettingsInput struct {
 	Provider domain.AIProvider `json:"provider"`
 	Model    string            `json:"model"`
-	APIKey   string            `json:"api_key"`
-	BaseURL  string            `json:"base_url,omitempty"`
 }
 
-// LLMSettingsInput is the input for LLM configuration
+// LLMSettingsInput is the input for LLM configuration.
+// API keys and base URLs come from environment variables, not request input.
 type LLMSettingsInput struct {
 	Provider domain.AIProvider `json:"provider"`
 	Model    string            `json:"model"`
-	APIKey   string            `json:"api_key"`
-	BaseURL  string            `json:"base_url,omitempty"`
 }
 
 // AISettingsStatus represents the status of AI services
 type AISettingsStatus struct {
-	Embedding           AIServiceStatus    `json:"embedding"`
-	LLM                 AIServiceStatus    `json:"llm"`
-	Vespa               VespaServiceStatus `json:"vespa"`
-	EffectiveSearchMode domain.SearchMode  `json:"effective_search_mode"`
-}
-
-// VespaServiceStatus represents the status of the Vespa search engine
-type VespaServiceStatus struct {
-	Connected         bool                   `json:"connected"`
-	SchemaMode        domain.VespaSchemaMode `json:"schema_mode"`
-	EmbeddingsEnabled bool                   `json:"embeddings_enabled"`
-	EmbeddingDim      int                    `json:"embedding_dim,omitempty"`
-	CanUpgrade        bool                   `json:"can_upgrade"`
-	Healthy           bool                   `json:"healthy"`
+	Embedding           AIServiceStatus   `json:"embedding"`
+	LLM                 AIServiceStatus   `json:"llm"`
+	EffectiveSearchMode domain.SearchMode `json:"effective_search_mode"`
 }
 
 // AIServiceStatus represents the status of a single AI service
@@ -85,4 +78,10 @@ type AIServiceStatus struct {
 	Provider     domain.AIProvider `json:"provider,omitempty"`
 	Model        string            `json:"model,omitempty"`
 	EmbeddingDim int               `json:"embedding_dim,omitempty"` // Only for embedding service
+}
+
+// AIProvidersResponse represents the list of available AI providers with their metadata
+type AIProvidersResponse struct {
+	Embedding []domain.AIProviderInfo `json:"embedding"`
+	LLM       []domain.AIProviderInfo `json:"llm"`
 }

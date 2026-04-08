@@ -1,13 +1,17 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driving"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driving"
 )
 
 // ErrorResponse represents an API error response
@@ -66,19 +70,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check Vespa health
-	if s.vespaAdminService != nil {
-		if err := s.vespaAdminService.HealthCheck(r.Context()); err != nil {
-			components["vespa"] = ComponentHealth{
-				Status:  "unhealthy",
-				Message: err.Error(),
-			}
-			allHealthy = false
-		} else {
-			components["vespa"] = ComponentHealth{Status: "healthy"}
-		}
-	}
-
 	// Check Redis health (optional)
 	if s.redisClient != nil {
 		if err := s.redisClient.Ping(r.Context()); err != nil {
@@ -129,6 +120,106 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 // @Router       /version [get]
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"version": s.version})
+}
+
+// handleGetCapabilities godoc
+// @Summary      Get capabilities
+// @Description  Returns information about what features are available based on environment configuration
+// @Tags         Capabilities
+// @Produce      json
+// @Success      200  {object}  driving.CapabilitiesResponse
+// @Failure      500  {object}  ErrorResponse  "Internal server error"
+// @Router       /capabilities [get]
+func (s *Server) handleGetCapabilities(w http.ResponseWriter, r *http.Request) {
+	if s.capabilitiesService == nil {
+		writeError(w, http.StatusServiceUnavailable, "capabilities service not available")
+		return
+	}
+
+	// Use team from auth context if available, otherwise fall back to "default"
+	teamID := "default"
+	if authCtx := GetAuthContext(r.Context()); authCtx != nil {
+		teamID = authCtx.TeamID
+	}
+
+	caps, err := s.capabilitiesService.GetCapabilities(r.Context(), teamID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get capabilities")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, caps)
+}
+
+// handleGetCapabilityPreferences godoc
+// @Summary      Get capability preferences
+// @Description  Get capability preferences for the current team
+// @Tags         Capabilities
+// @Produce      json
+// @Success      200  {object}  domain.CapabilityPreferences
+// @Failure      401  {object}  ErrorResponse  "Unauthorized"
+// @Failure      500  {object}  ErrorResponse  "Internal server error"
+// @Security     BearerAuth
+// @Router       /capability-preferences [get]
+func (s *Server) handleGetCapabilityPreferences(w http.ResponseWriter, r *http.Request) {
+	authCtx := GetAuthContext(r.Context())
+	if authCtx == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	if s.capabilitiesService == nil {
+		writeError(w, http.StatusServiceUnavailable, "capabilities service not available")
+		return
+	}
+
+	prefs, err := s.capabilitiesService.GetCapabilityPreferences(r.Context(), authCtx.TeamID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get capability preferences")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, prefs)
+}
+
+// handleUpdateCapabilityPreferences godoc
+// @Summary      Update capability preferences
+// @Description  Update capability preferences for the current team
+// @Tags         Capabilities
+// @Accept       json
+// @Produce      json
+// @Param        request  body      driving.UpdateCapabilityPreferencesRequest  true  "Capability preferences"
+// @Success      200      {object}  domain.CapabilityPreferences
+// @Failure      400      {object}  ErrorResponse  "Invalid request body"
+// @Failure      401      {object}  ErrorResponse  "Unauthorized"
+// @Failure      500      {object}  ErrorResponse  "Internal server error"
+// @Security     BearerAuth
+// @Router       /capability-preferences [put]
+func (s *Server) handleUpdateCapabilityPreferences(w http.ResponseWriter, r *http.Request) {
+	authCtx := GetAuthContext(r.Context())
+	if authCtx == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	if s.capabilitiesService == nil {
+		writeError(w, http.StatusServiceUnavailable, "capabilities service not available")
+		return
+	}
+
+	var req driving.UpdateCapabilityPreferencesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	prefs, err := s.capabilitiesService.UpdateCapabilityPreferences(r.Context(), authCtx.TeamID, req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update capability preferences")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, prefs)
 }
 
 // Auth endpoints
@@ -251,6 +342,29 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
+// handleSetupStatus godoc
+// @Summary      Get setup status
+// @Description  Returns the current setup state for FTUE (First-Time User Experience) flow. This endpoint is public and does not require authentication.
+// @Tags         Setup
+// @Produce      json
+// @Success      200  {object}  driving.SetupStatusResponse
+// @Failure      500  {object}  ErrorResponse  "Internal server error"
+// @Router       /setup/status [get]
+func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
+	if s.setupService == nil {
+		writeError(w, http.StatusServiceUnavailable, "setup service not available")
+		return
+	}
+
+	status, err := s.setupService.GetStatus(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get setup status")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, status)
+}
+
 // User endpoints
 
 // handleGetMe godoc
@@ -343,6 +457,141 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, user.ToSummary())
 }
 
+// handleGetUser godoc
+// @Summary      Get user
+// @Description  Get a user by ID (admin only)
+// @Tags         Users
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id   path      string  true  "User ID"
+// @Success      200  {object}  domain.UserSummary
+// @Failure      400  {object}  ErrorResponse  "Missing user ID"
+// @Failure      401  {object}  ErrorResponse  "Unauthorized"
+// @Failure      403  {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      404  {object}  ErrorResponse  "User not found"
+// @Failure      500  {object}  ErrorResponse  "Internal server error"
+// @Router       /users/{id} [get]
+func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing user id")
+		return
+	}
+
+	user, err := s.userService.Get(r.Context(), id)
+	if err != nil {
+		switch err {
+		case domain.ErrNotFound:
+			writeError(w, http.StatusNotFound, "user not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to get user")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, user.ToSummary())
+}
+
+// handleUpdateUser godoc
+// @Summary      Update user
+// @Description  Update a user's details (admin only)
+// @Tags         Users
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id       path      string                      true  "User ID"
+// @Param        request  body      driving.UpdateUserRequest   true  "User update request"
+// @Success      200      {object}  domain.UserSummary
+// @Failure      400      {object}  ErrorResponse  "Invalid request body"
+// @Failure      401      {object}  ErrorResponse  "Unauthorized"
+// @Failure      403      {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      404      {object}  ErrorResponse  "User not found"
+// @Failure      500      {object}  ErrorResponse  "Internal server error"
+// @Router       /users/{id} [put]
+func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing user id")
+		return
+	}
+
+	var req driving.UpdateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	user, err := s.userService.Update(r.Context(), id, req)
+	if err != nil {
+		switch err {
+		case domain.ErrNotFound:
+			writeError(w, http.StatusNotFound, "user not found")
+		case domain.ErrInvalidInput:
+			writeError(w, http.StatusBadRequest, "invalid input")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to update user")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, user.ToSummary())
+}
+
+// ResetPasswordRequest represents a password reset request
+// @Description Password reset request
+type ResetPasswordRequest struct {
+	Password string `json:"password" binding:"required"`
+}
+
+// handleResetUserPassword godoc
+// @Summary      Reset user password
+// @Description  Reset a user's password (admin only). This invalidates all existing sessions for the user.
+// @Tags         Users
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id       path      string                  true  "User ID"
+// @Param        request  body      ResetPasswordRequest    true  "New password"
+// @Success      200      {object}  StatusResponse
+// @Failure      400      {object}  ErrorResponse  "Invalid request or missing password"
+// @Failure      401      {object}  ErrorResponse  "Unauthorized"
+// @Failure      403      {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      404      {object}  ErrorResponse  "User not found"
+// @Failure      500      {object}  ErrorResponse  "Internal server error"
+// @Router       /users/{id}/reset-password [post]
+func (s *Server) handleResetUserPassword(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing user id")
+		return
+	}
+
+	var req ResetPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Password == "" {
+		writeError(w, http.StatusBadRequest, "password is required")
+		return
+	}
+
+	if err := s.userService.SetPassword(r.Context(), id, req.Password); err != nil {
+		switch err {
+		case domain.ErrNotFound:
+			writeError(w, http.StatusNotFound, "user not found")
+		case domain.ErrInvalidInput:
+			writeError(w, http.StatusBadRequest, "invalid password")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to reset password")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "password reset successfully"})
+}
+
 // handleDeleteUser godoc
 // @Summary      Delete user
 // @Description  Delete a user by ID (admin only)
@@ -427,6 +676,28 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Track search query for analytics (best effort, don't fail request if tracking fails)
+	if s.searchQueryRepo != nil {
+		authCtx := GetAuthContext(r.Context())
+		if authCtx != nil {
+			searchQuery := domain.NewSearchQuery(
+				authCtx.TeamID,
+				authCtx.UserID,
+				req.Query,
+				result.Mode,
+				result.TotalCount,
+				result.Took,
+			)
+			if len(req.SourceIDs) > 0 {
+				searchQuery.WithSourceFilters(req.SourceIDs)
+			}
+			// Log asynchronously to not slow down the search response
+			go func() {
+				_ = s.searchQueryRepo.Save(context.Background(), searchQuery)
+			}()
+		}
+	}
+
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -464,6 +735,46 @@ func (s *Server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, doc)
+}
+
+// DocumentURLResponse represents the response containing a document's external URL
+// @Description Document URL response
+type DocumentURLResponse struct {
+	URL string `json:"url" example:"https://github.com/owner/repo/blob/main/README.md"`
+}
+
+// handleOpenDocument godoc
+// @Summary      Open document
+// @Description  Get the external URL for a document. This returns the original URL in the source system (e.g., GitHub, Notion, etc.).
+// @Tags         Documents
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id   path      string  true  "Document ID"
+// @Success      200  {object}  DocumentURLResponse
+// @Failure      400  {object}  ErrorResponse  "Missing document ID"
+// @Failure      401  {object}  ErrorResponse  "Unauthorized"
+// @Failure      404  {object}  ErrorResponse  "Document not found"
+// @Failure      500  {object}  ErrorResponse  "Internal server error"
+// @Router       /documents/{id}/open [get]
+func (s *Server) handleOpenDocument(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing document id")
+		return
+	}
+
+	doc, err := s.docService.Get(r.Context(), id)
+	if err != nil {
+		switch err {
+		case domain.ErrNotFound:
+			writeError(w, http.StatusNotFound, "document not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to get document")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, DocumentURLResponse{URL: doc.Path})
 }
 
 // Source endpoints
@@ -721,7 +1032,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 // handleGetAISettings godoc
 // @Summary      Get AI settings
-// @Description  Get AI provider configuration (admin only). API keys are masked.
+// @Description  Get AI provider configuration (admin only). Shows provider/model choice and credential availability from environment.
 // @Tags         AI Settings
 // @Produce      json
 // @Security     BearerAuth
@@ -737,25 +1048,40 @@ func (s *Server) handleGetAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mask API keys for security
+	// Get capabilities to determine credential availability
+	caps, err := s.capabilitiesService.GetCapabilities(r.Context(), getTeamID(r.Context()))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get capabilities")
+		return
+	}
+
+	// Build response with info from settings (user choices) and capabilities (env config)
 	resp := aiSettingsResponse{
 		Embedding: aiProviderInfo{
 			Provider:     aiSettings.Embedding.Provider,
 			Model:        aiSettings.Embedding.Model,
-			BaseURL:      aiSettings.Embedding.BaseURL,
-			HasAPIKey:    aiSettings.Embedding.APIKey != "",
+			HasAPIKey:    isProviderConfigured(aiSettings.Embedding.Provider, caps.AIProviders.Embedding),
 			IsConfigured: aiSettings.Embedding.IsConfigured(),
 		},
 		LLM: aiProviderInfo{
 			Provider:     aiSettings.LLM.Provider,
 			Model:        aiSettings.LLM.Model,
-			BaseURL:      aiSettings.LLM.BaseURL,
-			HasAPIKey:    aiSettings.LLM.APIKey != "",
+			HasAPIKey:    isProviderConfigured(aiSettings.LLM.Provider, caps.AIProviders.LLM),
 			IsConfigured: aiSettings.LLM.IsConfigured(),
 		},
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// isProviderConfigured checks if a provider is in the list of configured providers
+func isProviderConfigured(provider domain.AIProvider, configuredProviders []domain.AIProvider) bool {
+	for _, p := range configuredProviders {
+		if p == provider {
+			return true
+		}
+	}
+	return false
 }
 
 type aiSettingsResponse struct {
@@ -768,9 +1094,8 @@ type aiSettingsResponse struct {
 type aiProviderInfo struct {
 	Provider     domain.AIProvider `json:"provider,omitempty" example:"openai"`
 	Model        string            `json:"model,omitempty" example:"text-embedding-3-small"`
-	BaseURL      string            `json:"base_url,omitempty" example:"https://api.openai.com/v1"`
-	HasAPIKey    bool              `json:"has_api_key" example:"true"`
-	IsConfigured bool              `json:"is_configured" example:"true"`
+	HasAPIKey    bool              `json:"has_api_key" example:"true"` // True if credentials are configured via environment
+	IsConfigured bool              `json:"is_configured" example:"true"` // True if provider and model are selected
 }
 
 // handleUpdateAISettings godoc
@@ -812,7 +1137,7 @@ func (s *Server) handleUpdateAISettings(w http.ResponseWriter, r *http.Request) 
 
 // handleGetAIStatus godoc
 // @Summary      Get AI status
-// @Description  Get the current status of AI services including embedding, LLM, and Vespa connection status
+// @Description  Get the current status of AI services including embedding and LLM
 // @Tags         AI Settings
 // @Produce      json
 // @Security     BearerAuth
@@ -825,25 +1150,6 @@ func (s *Server) handleGetAIStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get AI status")
 		return
-	}
-
-	// Add Vespa status if service is available
-	if s.vespaAdminService != nil {
-		vespaStatus, err := s.vespaAdminService.Status(r.Context())
-		if err == nil && vespaStatus != nil {
-			status.Vespa = driving.VespaServiceStatus{
-				Connected:         vespaStatus.Connected,
-				SchemaMode:        vespaStatus.SchemaMode,
-				EmbeddingsEnabled: vespaStatus.EmbeddingsEnabled,
-				EmbeddingDim:      vespaStatus.EmbeddingDim,
-				CanUpgrade:        vespaStatus.CanUpgrade,
-				Healthy:           vespaStatus.Healthy,
-			}
-			// Include embedding dimension in embedding status if Vespa is configured with embeddings
-			if vespaStatus.EmbeddingsEnabled && vespaStatus.EmbeddingDim > 0 {
-				status.Embedding.EmbeddingDim = vespaStatus.EmbeddingDim
-			}
-		}
 	}
 
 	writeJSON(w, http.StatusOK, status)
@@ -869,77 +1175,24 @@ func (s *Server) handleTestAIConnection(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "connected"})
 }
 
-// Vespa admin endpoints
-
-// handleVespaConnect godoc
-// @Summary      Connect to Vespa
-// @Description  Connect to a Vespa cluster and deploy the search schema (admin only). Use dev_mode=true for local development, dev_mode=false for production clusters.
-// @Tags         Vespa
-// @Accept       json
+// handleGetAIProviders godoc
+// @Summary      Get AI providers
+// @Description  Returns metadata about available AI providers and their models. Used for populating provider/model selection dropdowns in the UI.
+// @Tags         AI Settings
 // @Produce      json
 // @Security     BearerAuth
-// @Param        request  body      driving.ConnectVespaRequest  true  "Vespa connection settings"
-// @Success      200      {object}  driving.VespaStatus
-// @Failure      400      {object}  ErrorResponse  "Invalid request"
-// @Failure      401      {object}  ErrorResponse  "Unauthorized"
-// @Failure      403      {object}  ErrorResponse  "Forbidden - admin only"
-// @Failure      500      {object}  ErrorResponse  "Connection failed"
-// @Router       /admin/vespa/connect [post]
-func (s *Server) handleVespaConnect(w http.ResponseWriter, r *http.Request) {
-	var req driving.ConnectVespaRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && r.ContentLength > 0 {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	status, err := s.vespaAdminService.Connect(r.Context(), req)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, status)
-}
-
-// handleVespaStatus godoc
-// @Summary      Get Vespa status
-// @Description  Get the current Vespa connection and schema status (admin only)
-// @Tags         Vespa
-// @Produce      json
-// @Security     BearerAuth
-// @Success      200  {object}  driving.VespaStatus
+// @Success      200  {object}  driving.AIProvidersResponse
 // @Failure      401  {object}  ErrorResponse  "Unauthorized"
-// @Failure      403  {object}  ErrorResponse  "Forbidden - admin only"
 // @Failure      500  {object}  ErrorResponse  "Internal server error"
-// @Router       /admin/vespa/status [get]
-func (s *Server) handleVespaStatus(w http.ResponseWriter, r *http.Request) {
-	status, err := s.vespaAdminService.Status(r.Context())
+// @Router       /settings/ai/providers [get]
+func (s *Server) handleGetAIProviders(w http.ResponseWriter, r *http.Request) {
+	providers, err := s.settingsService.GetAIProviders(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to get AI providers")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, status)
-}
-
-// handleVespaHealth godoc
-// @Summary      Vespa health check
-// @Description  Check if the Vespa cluster is healthy (admin only)
-// @Tags         Vespa
-// @Produce      json
-// @Security     BearerAuth
-// @Success      200  {object}  StatusResponse
-// @Failure      401  {object}  ErrorResponse  "Unauthorized"
-// @Failure      403  {object}  ErrorResponse  "Forbidden - admin only"
-// @Failure      503  {object}  ErrorResponse  "Vespa unhealthy"
-// @Router       /admin/vespa/health [get]
-func (s *Server) handleVespaHealth(w http.ResponseWriter, r *http.Request) {
-	if err := s.vespaAdminService.HealthCheck(r.Context()); err != nil {
-		writeError(w, http.StatusServiceUnavailable, err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
+	writeJSON(w, http.StatusOK, providers)
 }
 
 // Provider configuration endpoints
@@ -968,138 +1221,6 @@ func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, providers)
-}
-
-// handleGetProviderConfig godoc
-// @Summary      Get provider config
-// @Description  Get OAuth app configuration for a provider type (admin only). Secrets are not exposed.
-// @Tags         Providers
-// @Produce      json
-// @Security     BearerAuth
-// @Param        type  path      string  true  "Provider type (e.g., github, slack, notion)"
-// @Success      200   {object}  driving.ProviderConfigResponse
-// @Failure      400   {object}  ErrorResponse  "Missing provider type"
-// @Failure      401   {object}  ErrorResponse  "Unauthorized"
-// @Failure      403   {object}  ErrorResponse  "Forbidden - admin only"
-// @Failure      404   {object}  ErrorResponse  "Provider not configured"
-// @Failure      500   {object}  ErrorResponse  "Internal server error"
-// @Router       /providers/{type}/config [get]
-func (s *Server) handleGetProviderConfig(w http.ResponseWriter, r *http.Request) {
-	if s.providerService == nil {
-		writeError(w, http.StatusServiceUnavailable, "provider service not configured - set MASTER_KEY to enable")
-		return
-	}
-
-	providerType := domain.ProviderType(r.PathValue("type"))
-	if providerType == "" {
-		writeError(w, http.StatusBadRequest, "missing provider type")
-		return
-	}
-
-	cfg, err := s.providerService.GetConfig(r.Context(), providerType)
-	if err != nil {
-		switch err {
-		case domain.ErrNotFound:
-			writeError(w, http.StatusNotFound, "provider not configured")
-		default:
-			writeError(w, http.StatusInternalServerError, "failed to get provider config")
-		}
-		return
-	}
-
-	writeJSON(w, http.StatusOK, cfg)
-}
-
-// handleSaveProviderConfig godoc
-// @Summary      Save provider config
-// @Description  Create or update OAuth app configuration for a provider type (admin only). This configures the OAuth client credentials that will be used for all installations of this provider.
-// @Tags         Providers
-// @Accept       json
-// @Produce      json
-// @Security     BearerAuth
-// @Param        type     path      string                          true  "Provider type (e.g., github, slack, notion)"
-// @Param        request  body      driving.SaveProviderConfigRequest  true  "Provider configuration"
-// @Success      200      {object}  driving.ProviderConfigResponse
-// @Failure      400      {object}  ErrorResponse  "Invalid input"
-// @Failure      401      {object}  ErrorResponse  "Unauthorized"
-// @Failure      403      {object}  ErrorResponse  "Forbidden - admin only"
-// @Failure      500      {object}  ErrorResponse  "Internal server error"
-// @Router       /providers/{type}/config [post]
-func (s *Server) handleSaveProviderConfig(w http.ResponseWriter, r *http.Request) {
-	if s.providerService == nil {
-		writeError(w, http.StatusServiceUnavailable, "provider service not configured - set MASTER_KEY to enable")
-		return
-	}
-
-	providerType := domain.ProviderType(r.PathValue("type"))
-	if providerType == "" {
-		writeError(w, http.StatusBadRequest, "missing provider type")
-		return
-	}
-
-	var req driving.SaveProviderConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	// Validate required fields
-	if req.ClientID == "" && req.APIKey == "" {
-		writeError(w, http.StatusBadRequest, "client_id or api_key is required")
-		return
-	}
-
-	cfg, err := s.providerService.SaveConfig(r.Context(), providerType, req)
-	if err != nil {
-		switch err {
-		case domain.ErrInvalidInput:
-			writeError(w, http.StatusBadRequest, "invalid provider type")
-		default:
-			writeError(w, http.StatusInternalServerError, "failed to save provider config")
-		}
-		return
-	}
-
-	writeJSON(w, http.StatusOK, cfg)
-}
-
-// handleDeleteProviderConfig godoc
-// @Summary      Delete provider config
-// @Description  Delete OAuth app configuration for a provider type (admin only). This will prevent new installations for this provider.
-// @Tags         Providers
-// @Produce      json
-// @Security     BearerAuth
-// @Param        type  path      string  true  "Provider type (e.g., github, slack, notion)"
-// @Success      200   {object}  StatusResponse
-// @Failure      400   {object}  ErrorResponse  "Missing provider type"
-// @Failure      401   {object}  ErrorResponse  "Unauthorized"
-// @Failure      403   {object}  ErrorResponse  "Forbidden - admin only"
-// @Failure      404   {object}  ErrorResponse  "Provider not configured"
-// @Failure      500   {object}  ErrorResponse  "Internal server error"
-// @Router       /providers/{type}/config [delete]
-func (s *Server) handleDeleteProviderConfig(w http.ResponseWriter, r *http.Request) {
-	if s.providerService == nil {
-		writeError(w, http.StatusServiceUnavailable, "provider service not configured - set MASTER_KEY to enable")
-		return
-	}
-
-	providerType := domain.ProviderType(r.PathValue("type"))
-	if providerType == "" {
-		writeError(w, http.StatusBadRequest, "missing provider type")
-		return
-	}
-
-	if err := s.providerService.DeleteConfig(r.Context(), providerType); err != nil {
-		switch err {
-		case domain.ErrNotFound:
-			writeError(w, http.StatusNotFound, "provider not configured")
-		default:
-			writeError(w, http.StatusInternalServerError, "failed to delete provider config")
-		}
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // OAuth flow endpoints
@@ -1163,20 +1284,33 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 
 // handleOAuthCallback godoc
 // @Summary      OAuth callback
-// @Description  Handle the OAuth callback from an external provider. This endpoint is called by the provider after the user authorizes the application. It exchanges the authorization code for tokens and creates a connector installation.
+// @Description  Handle the OAuth callback from an external provider. This endpoint is called by the provider after the user authorizes the application. It exchanges the authorization code for tokens and creates a connector installation, then redirects to the UI.
 // @Tags         OAuth
-// @Produce      json
 // @Param        code               query     string  false  "Authorization code from provider"
 // @Param        state              query     string  true   "State parameter for CSRF protection"
 // @Param        error              query     string  false  "Error code if authorization failed"
 // @Param        error_description  query     string  false  "Error description if authorization failed"
-// @Success      200  {object}  driving.CallbackResponse
-// @Failure      400  {object}  ErrorResponse  "Invalid state or missing code"
-// @Failure      500  {object}  ErrorResponse  "Token exchange failed"
+// @Success      302  "Redirect to UI oauth/complete page"
+// @Failure      302  "Redirect to UI oauth/complete page with error"
 // @Router       /oauth/callback [get]
 func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	uiBaseURL := os.Getenv("UI_BASE_URL")
+	if uiBaseURL == "" {
+		uiBaseURL = "http://localhost:3000" // Default for development
+	}
+
+	// Helper to redirect with error
+	redirectWithError := func(errCode, errDesc string) {
+		params := url.Values{}
+		params.Set("error", errCode)
+		if errDesc != "" {
+			params.Set("error_description", errDesc)
+		}
+		http.Redirect(w, r, fmt.Sprintf("%s/oauth/complete?%s", uiBaseURL, params.Encode()), http.StatusFound)
+	}
+
 	if s.oauthService == nil {
-		writeError(w, http.StatusServiceUnavailable, "oauth service not configured")
+		redirectWithError("service_unavailable", "oauth service not configured")
 		return
 	}
 
@@ -1188,7 +1322,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.State == "" {
-		writeError(w, http.StatusBadRequest, "missing state parameter")
+		redirectWithError("invalid_request", "missing state parameter")
 		return
 	}
 
@@ -1196,60 +1330,62 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Check for OAuth-specific errors
 		if oauthErr, ok := err.(*driving.OAuthError); ok {
-			switch oauthErr.Code {
-			case "invalid_state":
-				writeError(w, http.StatusBadRequest, oauthErr.Description)
-			case "access_denied":
-				writeError(w, http.StatusForbidden, "authorization denied by user")
-			default:
-				writeError(w, http.StatusBadRequest, oauthErr.Error())
-			}
+			redirectWithError(oauthErr.Code, oauthErr.Description)
 			return
 		}
 
 		switch err {
 		case driving.ErrOAuthInvalidState:
-			writeError(w, http.StatusBadRequest, "invalid or expired state")
+			redirectWithError("invalid_state", "invalid or expired state")
 		case driving.ErrOAuthProviderNotFound:
-			writeError(w, http.StatusNotFound, "provider not configured")
+			redirectWithError("provider_not_found", "provider not configured")
 		default:
-			writeError(w, http.StatusInternalServerError, "oauth callback failed: "+err.Error())
+			redirectWithError("callback_failed", err.Error())
 		}
 		return
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	// Success - redirect to UI with connection details
+	params := url.Values{}
+	params.Set("connection_id", resp.Installation.ID)
+	params.Set("provider", string(resp.Installation.ProviderType))
+	params.Set("name", resp.Installation.Name)
+	if resp.ReturnContext != "" {
+		params.Set("return_context", resp.ReturnContext)
+	}
+	redirectURL := fmt.Sprintf("%s/oauth/complete?%s", uiBaseURL, params.Encode())
+	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
 // Installation endpoints
 
-// handleCreateInstallation godoc
-// @Summary      Create installation
+// handleCreateConnection godoc
+// @Summary      Create connection
 // @Description  Create a new installation for non-OAuth connectors (API key, path-based). Used for connectors like localfs.
-// @Tags         Installations
+// @Tags         Connections
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
-// @Param        request  body      driving.CreateInstallationRequest  true  "Installation configuration"
-// @Success      201  {object}  domain.InstallationSummary
+// @Param        request  body      driving.CreateConnectionRequest  true  "Installation configuration"
+// @Success      201  {object}  domain.ConnectionSummary
 // @Failure      400  {object}  ErrorResponse  "Invalid request"
 // @Failure      401  {object}  ErrorResponse  "Unauthorized"
 // @Failure      403  {object}  ErrorResponse  "Forbidden - admin only"
 // @Failure      500  {object}  ErrorResponse  "Internal server error"
-// @Router       /installations [post]
-func (s *Server) handleCreateInstallation(w http.ResponseWriter, r *http.Request) {
-	if s.installationService == nil {
-		writeError(w, http.StatusServiceUnavailable, "installation service not configured")
+// @Router       /connections [post]
+func (s *Server) handleCreateConnection(w http.ResponseWriter, r *http.Request) {
+	if s.connectionService == nil {
+		writeError(w, http.StatusServiceUnavailable, "connection service not configured")
 		return
 	}
 
-	var req driving.CreateInstallationRequest
+	var req driving.CreateConnectionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
-	installation, err := s.installationService.Create(r.Context(), req)
+	installation, err := s.connectionService.Create(r.Context(), req)
 	if err != nil {
 		if errors.Is(err, domain.ErrInvalidInput) {
 			writeError(w, http.StatusBadRequest, "missing required fields")
@@ -1262,24 +1398,24 @@ func (s *Server) handleCreateInstallation(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, installation)
 }
 
-// handleListInstallations godoc
-// @Summary      List installations
-// @Description  Get all connector installations. Installations represent authenticated connections to external data sources (OAuth tokens, API keys, etc.).
-// @Tags         Installations
+// handleListConnections godoc
+// @Summary      List connections
+// @Description  Get all connector connections. Connections represent authenticated connections to external data sources (OAuth tokens, API keys, etc.).
+// @Tags         Connections
 // @Produce      json
 // @Security     BearerAuth
-// @Success      200  {array}   domain.InstallationSummary
+// @Success      200  {array}   domain.ConnectionSummary
 // @Failure      401  {object}  ErrorResponse  "Unauthorized"
 // @Failure      403  {object}  ErrorResponse  "Forbidden - admin only"
 // @Failure      500  {object}  ErrorResponse  "Internal server error"
-// @Router       /installations [get]
-func (s *Server) handleListInstallations(w http.ResponseWriter, r *http.Request) {
-	if s.installationService == nil {
-		writeError(w, http.StatusServiceUnavailable, "installation service not configured")
+// @Router       /connections [get]
+func (s *Server) handleListConnections(w http.ResponseWriter, r *http.Request) {
+	if s.connectionService == nil {
+		writeError(w, http.StatusServiceUnavailable, "connection service not configured")
 		return
 	}
 
-	installations, err := s.installationService.List(r.Context())
+	installations, err := s.connectionService.List(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list installations")
 		return
@@ -1288,33 +1424,33 @@ func (s *Server) handleListInstallations(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, installations)
 }
 
-// handleGetInstallation godoc
-// @Summary      Get installation
+// handleGetConnection godoc
+// @Summary      Get connection
 // @Description  Get a connector installation by ID. Returns installation metadata without secrets.
-// @Tags         Installations
+// @Tags         Connections
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id   path      string  true  "Installation ID"
-// @Success      200  {object}  domain.InstallationSummary
+// @Success      200  {object}  domain.ConnectionSummary
 // @Failure      400  {object}  ErrorResponse  "Missing installation ID"
 // @Failure      401  {object}  ErrorResponse  "Unauthorized"
 // @Failure      403  {object}  ErrorResponse  "Forbidden - admin only"
-// @Failure      404  {object}  ErrorResponse  "Installation not found"
+// @Failure      404  {object}  ErrorResponse  "Connection not found"
 // @Failure      500  {object}  ErrorResponse  "Internal server error"
-// @Router       /installations/{id} [get]
-func (s *Server) handleGetInstallation(w http.ResponseWriter, r *http.Request) {
-	if s.installationService == nil {
-		writeError(w, http.StatusServiceUnavailable, "installation service not configured")
+// @Router       /connections/{id} [get]
+func (s *Server) handleGetConnection(w http.ResponseWriter, r *http.Request) {
+	if s.connectionService == nil {
+		writeError(w, http.StatusServiceUnavailable, "connection service not configured")
 		return
 	}
 
 	id := r.PathValue("id")
 	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing installation id")
+		writeError(w, http.StatusBadRequest, "missing connection id")
 		return
 	}
 
-	installation, err := s.installationService.Get(r.Context(), id)
+	installation, err := s.connectionService.Get(r.Context(), id)
 	if err != nil {
 		switch err {
 		case domain.ErrNotFound:
@@ -1328,10 +1464,10 @@ func (s *Server) handleGetInstallation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, installation)
 }
 
-// handleDeleteInstallation godoc
-// @Summary      Delete installation
+// handleDeleteConnection godoc
+// @Summary      Delete connection
 // @Description  Delete a connector installation. Cannot delete installations that are in use by sources.
-// @Tags         Installations
+// @Tags         Connections
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id   path      string  true  "Installation ID"
@@ -1339,23 +1475,23 @@ func (s *Server) handleGetInstallation(w http.ResponseWriter, r *http.Request) {
 // @Failure      400  {object}  ErrorResponse  "Missing installation ID"
 // @Failure      401  {object}  ErrorResponse  "Unauthorized"
 // @Failure      403  {object}  ErrorResponse  "Forbidden - admin only"
-// @Failure      404  {object}  ErrorResponse  "Installation not found"
-// @Failure      409  {object}  ErrorResponse  "Installation in use by sources"
+// @Failure      404  {object}  ErrorResponse  "Connection not found"
+// @Failure      409  {object}  ErrorResponse  "Connection in use by sources"
 // @Failure      500  {object}  ErrorResponse  "Internal server error"
-// @Router       /installations/{id} [delete]
-func (s *Server) handleDeleteInstallation(w http.ResponseWriter, r *http.Request) {
-	if s.installationService == nil {
-		writeError(w, http.StatusServiceUnavailable, "installation service not configured")
+// @Router       /connections/{id} [delete]
+func (s *Server) handleDeleteConnection(w http.ResponseWriter, r *http.Request) {
+	if s.connectionService == nil {
+		writeError(w, http.StatusServiceUnavailable, "connection service not configured")
 		return
 	}
 
 	id := r.PathValue("id")
 	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing installation id")
+		writeError(w, http.StatusBadRequest, "missing connection id")
 		return
 	}
 
-	err := s.installationService.Delete(r.Context(), id)
+	err := s.connectionService.Delete(r.Context(), id)
 	if err != nil {
 		switch err {
 		case domain.ErrNotFound:
@@ -1374,7 +1510,7 @@ func (s *Server) handleDeleteInstallation(w http.ResponseWriter, r *http.Request
 // handleListContainers godoc
 // @Summary      List containers
 // @Description  List available containers (repositories, drives, spaces, etc.) for an installation. Use this to populate a resource picker UI for selecting which containers to index.
-// @Tags         Installations
+// @Tags         Connections
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id      path      string  true   "Installation ID"
@@ -1383,24 +1519,24 @@ func (s *Server) handleDeleteInstallation(w http.ResponseWriter, r *http.Request
 // @Failure      400     {object}  ErrorResponse  "Missing installation ID"
 // @Failure      401     {object}  ErrorResponse  "Unauthorized"
 // @Failure      403     {object}  ErrorResponse  "Forbidden - admin only"
-// @Failure      404     {object}  ErrorResponse  "Installation not found"
+// @Failure      404     {object}  ErrorResponse  "Connection not found"
 // @Failure      500     {object}  ErrorResponse  "Internal server error"
-// @Router       /installations/{id}/containers [get]
+// @Router       /connections/{id}/containers [get]
 func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
-	if s.installationService == nil {
-		writeError(w, http.StatusServiceUnavailable, "installation service not configured")
+	if s.connectionService == nil {
+		writeError(w, http.StatusServiceUnavailable, "connection service not configured")
 		return
 	}
 
 	id := r.PathValue("id")
 	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing installation id")
+		writeError(w, http.StatusBadRequest, "missing connection id")
 		return
 	}
 
 	cursor := r.URL.Query().Get("cursor")
 
-	containers, err := s.installationService.ListContainers(r.Context(), id, cursor)
+	containers, err := s.connectionService.ListContainers(r.Context(), id, cursor)
 	if err != nil {
 		switch err {
 		case domain.ErrNotFound:
@@ -1414,10 +1550,58 @@ func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, containers)
 }
 
-// handleTestInstallation godoc
-// @Summary      Test installation
+// handleGetConnectionSources godoc
+// @Summary      Get connection sources
+// @Description  List all sources using a specific connection. This shows which sources depend on this connection.
+// @Tags         Connections
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id   path      string  true  "Connection ID"
+// @Success      200  {array}   domain.Source
+// @Failure      400  {object}  ErrorResponse  "Missing connection ID"
+// @Failure      401  {object}  ErrorResponse  "Unauthorized"
+// @Failure      403  {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      404  {object}  ErrorResponse  "Connection not found"
+// @Failure      500  {object}  ErrorResponse  "Internal server error"
+// @Router       /connections/{id}/sources [get]
+func (s *Server) handleGetConnectionSources(w http.ResponseWriter, r *http.Request) {
+	if s.connectionService == nil {
+		writeError(w, http.StatusServiceUnavailable, "connection service not configured")
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing connection id")
+		return
+	}
+
+	// Verify connection exists
+	_, err := s.connectionService.Get(r.Context(), id)
+	if err != nil {
+		switch err {
+		case domain.ErrNotFound:
+			writeError(w, http.StatusNotFound, "connection not found")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to get connection")
+		}
+		return
+	}
+
+	// Get sources for this connection
+	sources, err := s.sourceService.ListByConnection(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list sources")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, sources)
+}
+
+// handleTestConnection godoc
+// @Summary      Test connection
 // @Description  Test if an installation's credentials are still valid. This attempts to authenticate with the external service.
-// @Tags         Installations
+// @Tags         Connections
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id   path      string  true  "Installation ID"
@@ -1425,22 +1609,22 @@ func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
 // @Failure      400  {object}  ErrorResponse  "Missing installation ID"
 // @Failure      401  {object}  ErrorResponse  "Unauthorized"
 // @Failure      403  {object}  ErrorResponse  "Forbidden - admin only"
-// @Failure      404  {object}  ErrorResponse  "Installation not found"
+// @Failure      404  {object}  ErrorResponse  "Connection not found"
 // @Failure      503  {object}  ErrorResponse  "Credentials invalid or service unavailable"
-// @Router       /installations/{id}/test [post]
-func (s *Server) handleTestInstallation(w http.ResponseWriter, r *http.Request) {
-	if s.installationService == nil {
-		writeError(w, http.StatusServiceUnavailable, "installation service not configured")
+// @Router       /connections/{id}/test [post]
+func (s *Server) handleTestConnection(w http.ResponseWriter, r *http.Request) {
+	if s.connectionService == nil {
+		writeError(w, http.StatusServiceUnavailable, "connection service not configured")
 		return
 	}
 
 	id := r.PathValue("id")
 	if id == "" {
-		writeError(w, http.StatusBadRequest, "missing installation id")
+		writeError(w, http.StatusBadRequest, "missing connection id")
 		return
 	}
 
-	err := s.installationService.TestConnection(r.Context(), id)
+	err := s.connectionService.TestConnection(r.Context(), id)
 	if err != nil {
 		switch err {
 		case domain.ErrNotFound:
@@ -1454,52 +1638,52 @@ func (s *Server) handleTestInstallation(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "connected"})
 }
 
-// Source selection endpoint
+// Source containers endpoint
 
-// UpdateSelectionRequest represents a request to update source container selection
+// UpdateContainersRequest represents a request to update source container containers
 // @Description Request to update which containers a source should index
-type UpdateSelectionRequest struct {
-	// SelectedContainers is the list of container IDs to index.
+type UpdateContainersRequest struct {
+	// Containers is the list of containers to index.
 	// Empty list means index all available containers.
-	SelectedContainers []string `json:"selected_containers" example:"[\"octocat/hello-world\",\"octocat/spoon-knife\"]"`
+	Containers []domain.Container `json:"containers"`
 }
 
-// handleUpdateSourceSelection godoc
-// @Summary      Update source selection
+// handleUpdateSourceContainers godoc
+// @Summary      Update source containers
 // @Description  Update which containers (repos, drives, spaces) a source should index. Pass an empty array to index all available containers.
 // @Tags         Sources
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
 // @Param        id       path      string                   true  "Source ID"
-// @Param        request  body      UpdateSelectionRequest   true  "Container selection"
+// @Param        request  body      UpdateContainersRequest   true  "Container containers"
 // @Success      200      {object}  StatusResponse
 // @Failure      400      {object}  ErrorResponse  "Invalid request"
 // @Failure      401      {object}  ErrorResponse  "Unauthorized"
 // @Failure      403      {object}  ErrorResponse  "Forbidden - admin only"
 // @Failure      404      {object}  ErrorResponse  "Source not found"
 // @Failure      500      {object}  ErrorResponse  "Internal server error"
-// @Router       /sources/{id}/selection [put]
-func (s *Server) handleUpdateSourceSelection(w http.ResponseWriter, r *http.Request) {
+// @Router       /sources/{id}/containers [put]
+func (s *Server) handleUpdateSourceContainers(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "missing source id")
 		return
 	}
 
-	var req UpdateSelectionRequest
+	var req UpdateContainersRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	err := s.sourceService.UpdateSelection(r.Context(), id, req.SelectedContainers)
+	err := s.sourceService.UpdateContainers(r.Context(), id, req.Containers)
 	if err != nil {
 		switch err {
 		case domain.ErrNotFound:
 			writeError(w, http.StatusNotFound, "source not found")
 		default:
-			writeError(w, http.StatusInternalServerError, "failed to update selection")
+			writeError(w, http.StatusInternalServerError, "failed to update containers")
 		}
 		return
 	}
@@ -1811,7 +1995,7 @@ type AdminStatsResponse struct {
 	Documents     DocumentStats     `json:"documents"`
 	Chunks        ChunkStats        `json:"chunks"`
 	Sources       SourceStats       `json:"sources"`
-	Installations InstallationStats `json:"installations"`
+	Connections ConnectionStats `json:"installations"`
 	Users         UserStats         `json:"users"`
 }
 
@@ -1831,8 +2015,8 @@ type SourceStats struct {
 	Enabled int `json:"enabled"`
 }
 
-// InstallationStats represents installation statistics
-type InstallationStats struct {
+// ConnectionStats represents installation statistics
+type ConnectionStats struct {
 	Total int `json:"total"`
 }
 
@@ -1875,10 +2059,10 @@ func (s *Server) handleGetAdminStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get installation count
+	// Get connection count
 	var installCount int
-	if s.installationService != nil {
-		installations, err := s.installationService.List(ctx)
+	if s.connectionService != nil {
+		installations, err := s.connectionService.List(ctx)
 		if err == nil {
 			installCount = len(installations)
 		}
@@ -1908,7 +2092,7 @@ func (s *Server) handleGetAdminStats(w http.ResponseWriter, r *http.Request) {
 			Total:   len(sources),
 			Enabled: enabledCount,
 		},
-		Installations: InstallationStats{
+		Connections: ConnectionStats{
 			Total: installCount,
 		},
 		Users: UserStats{
@@ -1917,9 +2101,371 @@ func (s *Server) handleGetAdminStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Admin dashboard endpoints
+
+// handleListJobs godoc
+// @Summary      List job history
+// @Description  Retrieve job execution history with filtering and pagination
+// @Tags         Admin
+// @Produce      json
+// @Security     BearerAuth
+// @Param        status  query     string  false  "Filter by status (pending, processing, completed, failed)"
+// @Param        type    query     string  false  "Filter by task type (sync_source, sync_all)"
+// @Param        limit   query     int     false  "Maximum number of jobs to return (default: 50, max: 100)"
+// @Param        offset  query     int     false  "Number of jobs to skip for pagination"
+// @Success      200     {object}  domain.JobHistory
+// @Failure      401     {object}  ErrorResponse  "Unauthorized"
+// @Failure      403     {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      500     {object}  ErrorResponse  "Internal server error"
+// @Router       /admin/jobs [get]
+func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
+	if s.adminService == nil {
+		writeError(w, http.StatusServiceUnavailable, "admin service not available")
+		return
+	}
+
+	teamID := getTeamID(r.Context())
+	if teamID == "" {
+		writeError(w, http.StatusUnauthorized, "missing team context")
+		return
+	}
+
+	req := driving.ListJobsRequest{
+		Limit:  50,
+		Offset: 0,
+	}
+
+	if statusStr := r.URL.Query().Get("status"); statusStr != "" {
+		req.Status = domain.TaskStatus(statusStr)
+	}
+	if typeStr := r.URL.Query().Get("type"); typeStr != "" {
+		req.Type = domain.TaskType(typeStr)
+	}
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if limit, err := parseInt(limitStr); err == nil {
+			req.Limit = limit
+		}
+	}
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if offset, err := parseInt(offsetStr); err == nil {
+			req.Offset = offset
+		}
+	}
+
+	history, err := s.adminService.ListJobs(r.Context(), teamID, req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list jobs: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, history)
+}
+
+// handleGetUpcomingJobs godoc
+// @Summary      Get upcoming jobs
+// @Description  Retrieve pending tasks and scheduled task configurations
+// @Tags         Admin
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  domain.UpcomingJobs
+// @Failure      401  {object}  ErrorResponse  "Unauthorized"
+// @Failure      403  {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      500  {object}  ErrorResponse  "Internal server error"
+// @Router       /admin/jobs/upcoming [get]
+func (s *Server) handleGetUpcomingJobs(w http.ResponseWriter, r *http.Request) {
+	if s.adminService == nil {
+		writeError(w, http.StatusServiceUnavailable, "admin service not available")
+		return
+	}
+
+	teamID := getTeamID(r.Context())
+	if teamID == "" {
+		writeError(w, http.StatusUnauthorized, "missing team context")
+		return
+	}
+
+	upcoming, err := s.adminService.GetUpcomingJobs(r.Context(), teamID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get upcoming jobs: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, upcoming)
+}
+
+// handleGetJob godoc
+// @Summary      Get job details
+// @Description  Retrieve detailed information about a specific job
+// @Tags         Admin
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id   path      string  true  "Job ID"
+// @Success      200  {object}  domain.JobDetail
+// @Failure      400  {object}  ErrorResponse  "Missing job ID"
+// @Failure      401  {object}  ErrorResponse  "Unauthorized"
+// @Failure      403  {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      404  {object}  ErrorResponse  "Job not found"
+// @Failure      500  {object}  ErrorResponse  "Internal server error"
+// @Router       /admin/jobs/{id} [get]
+func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
+	if s.adminService == nil {
+		writeError(w, http.StatusServiceUnavailable, "admin service not available")
+		return
+	}
+
+	teamID := getTeamID(r.Context())
+	if teamID == "" {
+		writeError(w, http.StatusUnauthorized, "missing team context")
+		return
+	}
+
+	jobID := r.PathValue("id")
+	if jobID == "" {
+		writeError(w, http.StatusBadRequest, "missing job id")
+		return
+	}
+
+	job, err := s.adminService.GetJob(r.Context(), teamID, jobID)
+	if err != nil {
+		switch err {
+		case domain.ErrNotFound:
+			writeError(w, http.StatusNotFound, "job not found")
+		case domain.ErrUnauthorized:
+			writeError(w, http.StatusForbidden, "job belongs to different team")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to get job: "+err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, job)
+}
+
+// handleGetJobStats godoc
+// @Summary      Get job statistics
+// @Description  Compute aggregated job statistics for a time period
+// @Tags         Admin
+// @Produce      json
+// @Security     BearerAuth
+// @Param        period  query     string  false  "Time period (24h, 7d, 30d)" default(24h)
+// @Success      200     {object}  domain.JobStats
+// @Failure      401     {object}  ErrorResponse  "Unauthorized"
+// @Failure      403     {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      500     {object}  ErrorResponse  "Internal server error"
+// @Router       /admin/jobs/stats [get]
+func (s *Server) handleGetJobStats(w http.ResponseWriter, r *http.Request) {
+	if s.adminService == nil {
+		writeError(w, http.StatusServiceUnavailable, "admin service not available")
+		return
+	}
+
+	teamID := getTeamID(r.Context())
+	if teamID == "" {
+		writeError(w, http.StatusUnauthorized, "missing team context")
+		return
+	}
+
+	period := driving.JobStatsPeriod24Hours
+	if periodStr := r.URL.Query().Get("period"); periodStr != "" {
+		period = driving.JobStatsPeriod(periodStr)
+	}
+
+	stats, err := s.adminService.GetJobStats(r.Context(), teamID, period)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get job stats: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// handleGetSearchAnalytics godoc
+// @Summary      Get search analytics
+// @Description  Compute search usage analytics for a time period
+// @Tags         Admin
+// @Produce      json
+// @Security     BearerAuth
+// @Param        period  query     string  false  "Time period (24h, 7d, 30d)" default(24h)
+// @Success      200     {object}  domain.SearchAnalytics
+// @Failure      401     {object}  ErrorResponse  "Unauthorized"
+// @Failure      403     {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      500     {object}  ErrorResponse  "Internal server error"
+// @Router       /admin/search/analytics [get]
+func (s *Server) handleGetSearchAnalytics(w http.ResponseWriter, r *http.Request) {
+	if s.adminService == nil {
+		writeError(w, http.StatusServiceUnavailable, "admin service not available")
+		return
+	}
+
+	teamID := getTeamID(r.Context())
+	if teamID == "" {
+		writeError(w, http.StatusUnauthorized, "missing team context")
+		return
+	}
+
+	period := driving.SearchAnalyticsPeriod24Hours
+	if periodStr := r.URL.Query().Get("period"); periodStr != "" {
+		period = driving.SearchAnalyticsPeriod(periodStr)
+	}
+
+	analytics, err := s.adminService.GetSearchAnalytics(r.Context(), teamID, period)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get search analytics: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, analytics)
+}
+
+// handleGetSearchHistory godoc
+// @Summary      Get search history
+// @Description  Retrieve recent search queries
+// @Tags         Admin
+// @Produce      json
+// @Security     BearerAuth
+// @Param        limit   query     int     false  "Maximum number of searches to return (default: 50, max: 100)"
+// @Success      200     {array}   domain.SearchQuery
+// @Failure      401     {object}  ErrorResponse  "Unauthorized"
+// @Failure      403     {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      500     {object}  ErrorResponse  "Internal server error"
+// @Router       /admin/search/history [get]
+func (s *Server) handleGetSearchHistory(w http.ResponseWriter, r *http.Request) {
+	if s.adminService == nil {
+		writeError(w, http.StatusServiceUnavailable, "admin service not available")
+		return
+	}
+
+	teamID := getTeamID(r.Context())
+	if teamID == "" {
+		writeError(w, http.StatusUnauthorized, "missing team context")
+		return
+	}
+
+	limit := 50
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := parseInt(limitStr); err == nil {
+			limit = l
+		}
+	}
+
+	history, err := s.adminService.GetSearchHistory(r.Context(), teamID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get search history: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, history)
+}
+
+// handleGetSearchMetrics godoc
+// @Summary      Get search metrics
+// @Description  Compute search performance metrics for a time period
+// @Tags         Admin
+// @Produce      json
+// @Security     BearerAuth
+// @Param        period  query     string  false  "Time period (24h, 7d, 30d)" default(24h)
+// @Success      200     {object}  domain.SearchMetrics
+// @Failure      401     {object}  ErrorResponse  "Unauthorized"
+// @Failure      403     {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      500     {object}  ErrorResponse  "Internal server error"
+// @Router       /admin/search/metrics [get]
+func (s *Server) handleGetSearchMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.adminService == nil {
+		writeError(w, http.StatusServiceUnavailable, "admin service not available")
+		return
+	}
+
+	teamID := getTeamID(r.Context())
+	if teamID == "" {
+		writeError(w, http.StatusUnauthorized, "missing team context")
+		return
+	}
+
+	period := driving.SearchAnalyticsPeriod24Hours
+	if periodStr := r.URL.Query().Get("period"); periodStr != "" {
+		period = driving.SearchAnalyticsPeriod(periodStr)
+	}
+
+	metrics, err := s.adminService.GetSearchMetrics(r.Context(), teamID, period)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get search metrics: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, metrics)
+}
+
+// TriggerReindexResponse represents the response from triggering a reindex
+// @Description Response containing task IDs created for reindex operation
+type TriggerReindexResponse struct {
+	TaskIDs []string `json:"task_ids"`
+	Message string   `json:"message"`
+}
+
+// handleTriggerReindex godoc
+// @Summary      Trigger reindex
+// @Description  Create tasks to reindex sources. If no source IDs are provided, all enabled sources are reindexed.
+// @Tags         Admin
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        request  body      driving.TriggerReindexRequest  true  "Reindex options"
+// @Success      202      {object}  TriggerReindexResponse
+// @Failure      400      {object}  ErrorResponse  "Invalid request body"
+// @Failure      401      {object}  ErrorResponse  "Unauthorized"
+// @Failure      403      {object}  ErrorResponse  "Forbidden - admin only"
+// @Failure      500      {object}  ErrorResponse  "Internal server error"
+// @Router       /admin/reindex [post]
+func (s *Server) handleTriggerReindex(w http.ResponseWriter, r *http.Request) {
+	if s.adminService == nil {
+		writeError(w, http.StatusServiceUnavailable, "admin service not available")
+		return
+	}
+
+	teamID := getTeamID(r.Context())
+	if teamID == "" {
+		writeError(w, http.StatusUnauthorized, "missing team context")
+		return
+	}
+
+	var req driving.TriggerReindexRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	taskIDs, err := s.adminService.TriggerReindex(r.Context(), teamID, req)
+	if err != nil {
+		switch err {
+		case domain.ErrNotFound:
+			writeError(w, http.StatusNotFound, "one or more sources not found")
+		case domain.ErrInvalidInput:
+			writeError(w, http.StatusBadRequest, "invalid reindex request")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to trigger reindex: "+err.Error())
+		}
+		return
+	}
+
+	message := fmt.Sprintf("Reindex triggered for %d source(s)", len(taskIDs))
+	writeJSON(w, http.StatusAccepted, TriggerReindexResponse{
+		TaskIDs: taskIDs,
+		Message: message,
+	})
+}
+
 // parseInt is a helper to parse integer query parameters
 func parseInt(s string) (int, error) {
 	return strconv.Atoi(s)
+}
+
+// getTeamID retrieves the team ID from the auth context
+func getTeamID(ctx context.Context) string {
+	authCtx := GetAuthContext(ctx)
+	if authCtx == nil {
+		return ""
+	}
+	return authCtx.TeamID
 }
 
 // Helper functions

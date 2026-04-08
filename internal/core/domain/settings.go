@@ -13,9 +13,43 @@ const (
 	AIProviderVoyage    AIProvider = "voyage"
 )
 
+// SyncExclusionSettings holds sync exclusion patterns configuration
+type SyncExclusionSettings struct {
+	// EnabledPatterns are the default patterns that are currently enabled
+	EnabledPatterns []string `json:"enabled_patterns"`
+
+	// DisabledPatterns are the default patterns that have been toggled off
+	DisabledPatterns []string `json:"disabled_patterns"`
+
+	// CustomPatterns are user-defined exclusion patterns
+	CustomPatterns []string `json:"custom_patterns"`
+}
+
+// GetActivePatterns returns all active exclusion patterns (enabled defaults + custom)
+func (s *SyncExclusionSettings) GetActivePatterns() []string {
+	if s == nil {
+		return []string{}
+	}
+
+	// Combine enabled patterns and custom patterns
+	active := make([]string, 0, len(s.EnabledPatterns)+len(s.CustomPatterns))
+	active = append(active, s.EnabledPatterns...)
+	active = append(active, s.CustomPatterns...)
+	return active
+}
+
+// HasPatterns returns true if there are any active exclusion patterns
+func (s *SyncExclusionSettings) HasPatterns() bool {
+	if s == nil {
+		return false
+	}
+	return len(s.EnabledPatterns) > 0 || len(s.CustomPatterns) > 0
+}
+
 // Settings holds team-wide configuration
 // Note: AI configuration (provider, model, API keys) is managed via AISettings
 // and the /settings/ai endpoint, not here.
+// Note: Semantic/vector search is now controlled via CapabilityPreferences.
 type Settings struct {
 	TeamID string `json:"team_id"`
 
@@ -25,39 +59,75 @@ type Settings struct {
 	MaxResultsPerPage int        `json:"max_results_per_page"`
 
 	// Sync Configuration
-	SyncIntervalMinutes int  `json:"sync_interval_minutes"`
-	SyncEnabled         bool `json:"sync_enabled"`
-
-	// Feature Flags
-	SemanticSearchEnabled bool `json:"semantic_search_enabled"`
-	AutoSuggestEnabled    bool `json:"auto_suggest_enabled"`
+	SyncIntervalMinutes int                     `json:"sync_interval_minutes"`
+	SyncEnabled         bool                    `json:"sync_enabled"`
+	SyncExclusions      *SyncExclusionSettings  `json:"sync_exclusions,omitempty"`
 
 	// Metadata
 	UpdatedAt time.Time `json:"updated_at"`
 	UpdatedBy string    `json:"updated_by"` // User ID
 }
 
-// DefaultSettings returns sensible defaults for a new team
-func DefaultSettings(teamID string) *Settings {
-	return &Settings{
-		TeamID:                teamID,
-		DefaultSearchMode:     SearchModeHybrid,
-		ResultsPerPage:        20,
-		MaxResultsPerPage:     100,
-		SyncIntervalMinutes:   60,
-		SyncEnabled:           true,
-		SemanticSearchEnabled: true,
-		AutoSuggestEnabled:    true,
-		UpdatedAt:             time.Now(),
+// DefaultSyncExclusions returns common file/folder patterns to exclude from sync
+func DefaultSyncExclusions() *SyncExclusionSettings {
+	return &SyncExclusionSettings{
+		EnabledPatterns: []string{
+			// Version control
+			".git/",
+			".svn/",
+			".hg/",
+			// Dependencies
+			"node_modules/",
+			"vendor/",
+			"venv/",
+			".venv/",
+			// Build artifacts
+			"build/",
+			"dist/",
+			"target/",
+			"out/",
+			"bin/",
+			// IDE/Editor
+			".idea/",
+			".vscode/",
+			".vs/",
+			// OS files
+			".DS_Store",
+			"Thumbs.db",
+			// Temporary files
+			"*.tmp",
+			"*.temp",
+			"*.log",
+			// Archives
+			"*.zip",
+			"*.tar.gz",
+			"*.rar",
+			// Media (large files)
+			"*.mp4",
+			"*.mov",
+			"*.avi",
+			"*.mp3",
+			"*.wav",
+		},
+		DisabledPatterns: []string{},
+		CustomPatterns:   []string{},
 	}
 }
 
-// APIKeyConfig holds API key configuration (stored encrypted)
-type APIKeyConfig struct {
-	Provider AIProvider `json:"provider"`
-	APIKey   string     `json:"-"` // Never serialize
-	BaseURL  string     `json:"base_url,omitempty"`
+// DefaultSettings returns sensible defaults for a new team
+func DefaultSettings(teamID string) *Settings {
+	return &Settings{
+		TeamID:              teamID,
+		DefaultSearchMode:   SearchModeHybrid,
+		ResultsPerPage:      20,
+		MaxResultsPerPage:   100,
+		SyncIntervalMinutes: 60,
+		SyncEnabled:         true,
+		SyncExclusions:      DefaultSyncExclusions(),
+		UpdatedAt:           time.Now(),
+	}
 }
+
 
 // EmbeddingConfig holds embedding model configuration
 type EmbeddingConfig struct {
@@ -87,41 +157,29 @@ type AISettings struct {
 }
 
 // EmbeddingSettings configures the embedding service
+// API keys and base URLs come from environment variables, not stored here
 type EmbeddingSettings struct {
 	Provider AIProvider `json:"provider"`
 	Model    string     `json:"model"`
-	APIKey   string     `json:"-"` // Never serialize to JSON
-	BaseURL  string     `json:"base_url,omitempty"`
 }
 
 // IsConfigured returns true if embedding settings are properly configured
+// Note: API key availability is checked at the infrastructure layer (config package)
 func (e *EmbeddingSettings) IsConfigured() bool {
-	if e.Provider == "" {
-		return false
-	}
-	if e.Provider.RequiresAPIKey() && e.APIKey == "" {
-		return false
-	}
-	return true
+	return e.Provider != "" && e.Model != ""
 }
 
 // LLMSettings configures the LLM service
+// API keys and base URLs come from environment variables, not stored here
 type LLMSettings struct {
 	Provider AIProvider `json:"provider"`
 	Model    string     `json:"model"`
-	APIKey   string     `json:"-"` // Never serialize to JSON
-	BaseURL  string     `json:"base_url,omitempty"`
 }
 
 // IsConfigured returns true if LLM settings are properly configured
+// Note: API key availability is checked at the infrastructure layer (config package)
 func (l *LLMSettings) IsConfigured() bool {
-	if l.Provider == "" {
-		return false
-	}
-	if l.Provider.RequiresAPIKey() && l.APIKey == "" {
-		return false
-	}
-	return true
+	return l.Provider != "" && l.Model != ""
 }
 
 // RequiresAPIKey returns true if this provider requires an API key
@@ -153,4 +211,21 @@ func (s *AISettings) Validate() error {
 		return ErrInvalidProvider
 	}
 	return nil
+}
+
+// AIModelInfo describes a specific model offered by a provider
+type AIModelInfo struct {
+	ID         string `json:"id"`           // Model identifier (e.g., "text-embedding-3-small")
+	Name       string `json:"name"`         // Display name
+	Dimensions int    `json:"dimensions,omitempty"` // For embedding models only
+}
+
+// AIProviderInfo provides metadata about an AI provider
+type AIProviderInfo struct {
+	ID               string        `json:"id"`                  // Provider identifier (matches AIProvider)
+	Name             string        `json:"name"`                // Display name
+	Models           []AIModelInfo `json:"models"`              // Available models
+	RequiresAPIKey   bool          `json:"requires_api_key"`    // Whether API key is needed
+	RequiresBaseURL  bool          `json:"requires_base_url"`   // Whether base URL is needed (e.g., Ollama)
+	APIKeyURL        string        `json:"api_key_url,omitempty"` // URL to get API key
 }

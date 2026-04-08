@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
 )
 
 // Ensure ContainerLister implements the interface.
@@ -91,11 +91,11 @@ func countFiles(path string) int {
 
 // ContainerListerFactory creates ContainerListers for LocalFS installations.
 type ContainerListerFactory struct {
-	installationStore driven.InstallationStore
+	installationStore driven.ConnectionStore
 }
 
 // NewContainerListerFactory creates a factory for LocalFS container listers.
-func NewContainerListerFactory(installationStore driven.InstallationStore) *ContainerListerFactory {
+func NewContainerListerFactory(installationStore driven.ConnectionStore) *ContainerListerFactory {
 	return &ContainerListerFactory{
 		installationStore: installationStore,
 	}

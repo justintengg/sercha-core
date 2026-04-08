@@ -87,21 +87,25 @@ func TestFilters(t *testing.T) {
 }
 
 func TestSearchResult(t *testing.T) {
-	chunks := []*RankedChunk{
+	items := []*SearchResultItem{
 		{
-			Chunk: &Chunk{ID: "chunk-1", Content: "test content"},
-			Score: 0.95,
+			DocumentID: "doc-1",
+			Title:      "Test Document",
+			Snippet:    "test content",
+			Score:      0.95,
 		},
 		{
-			Chunk: &Chunk{ID: "chunk-2", Content: "more content"},
-			Score: 0.85,
+			DocumentID: "doc-2",
+			Title:      "Another Document",
+			Snippet:    "more content",
+			Score:      0.85,
 		},
 	}
 
 	result := &SearchResult{
 		Query:      "test query",
 		Mode:       SearchModeHybrid,
-		Results:    chunks,
+		Results:    items,
 		TotalCount: 100,
 		Took:       100 * time.Millisecond,
 	}
@@ -152,19 +156,5 @@ func TestRankedChunk(t *testing.T) {
 	}
 	if len(ranked.Highlights) != 1 {
 		t.Errorf("expected 1 highlight, got %d", len(ranked.Highlights))
-	}
-}
-
-func TestSearchSuggestion(t *testing.T) {
-	suggestion := SearchSuggestion{
-		Text:  "suggested query",
-		Score: 0.9,
-	}
-
-	if suggestion.Text != "suggested query" {
-		t.Errorf("expected text 'suggested query', got %s", suggestion.Text)
-	}
-	if suggestion.Score != 0.9 {
-		t.Errorf("expected score 0.9, got %f", suggestion.Score)
 	}
 }

@@ -5,8 +5,6 @@ import Image from "next/image";
 import {
   Loader2,
   X,
-  Eye,
-  EyeOff,
   CheckCircle2,
   XCircle,
   Search,
@@ -19,23 +17,23 @@ import {
 import {
   listProviders,
   listSources,
-  listInstallations,
-  saveProviderConfig,
+  listConnections,
+  getCapabilities,
   startOAuth,
-  getInstallation,
-  getInstallationContainers,
+  getConnection,
+  getConnectionContainers,
   createSource,
   deleteSource,
   ApiError,
   type ProviderListItem,
   type SourceSummary,
-  type InstallationSummary,
+  type ConnectionSummary,
   type Container,
 } from "@/lib/api";
-import { PROVIDER_ICONS, PROVIDER_HELP_URLS } from "@/lib/providers";
+import { PROVIDER_ICONS } from "@/lib/providers";
 
 interface StepDataSourcesProps {
-  installationId?: string;
+  connectionId?: string;
   provider?: string;
   onComplete: () => void;
   onSkip: () => void;
@@ -43,8 +41,7 @@ interface StepDataSourcesProps {
 
 type SubFlowView =
   | "selection"
-  | "installation_picker"
-  | "credentials"
+  | "connection_picker"
   | "connecting"
   | "select"
   | "creating"
@@ -52,7 +49,7 @@ type SubFlowView =
   | "error";
 
 export function StepDataSources({
-  installationId,
+  connectionId,
   provider: providerFromUrl,
   onComplete,
   onSkip,
@@ -67,15 +64,9 @@ export function StepDataSources({
   const [connectedSources, setConnectedSources] = useState<SourceSummary[]>([]);
   const [pendingProvider, setPendingProvider] = useState<ProviderListItem | null>(null);
 
-  // Credentials state
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const [showSecret, setShowSecret] = useState(false);
-  const [isSavingCredentials, setIsSavingCredentials] = useState(false);
-
-  // Installation & container state
-  const [selectedInstallation, setSelectedInstallation] = useState<InstallationSummary | null>(null);
-  const [existingInstallations, setExistingInstallations] = useState<InstallationSummary[]>([]);
+  // Connection & container state
+  const [selectedConnection, setSelectedConnection] = useState<ConnectionSummary | null>(null);
+  const [existingConnections, setExistingConnections] = useState<ConnectionSummary[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
   const [selectedContainers, setSelectedContainers] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
@@ -89,16 +80,22 @@ export function StepDataSources({
   useEffect(() => {
     const loadInitialData = async () => {
       try {
-        const [providerList, sourceList] = await Promise.all([
+        const [caps, providerList, sourceList] = await Promise.all([
+          getCapabilities(),
           listProviders(),
           listSources().catch(() => []), // Gracefully handle if no sources yet
         ]);
-        setProviders(providerList);
+
+        // Filter providers to only show those configured in environment
+        const configuredProviders = providerList.filter((p) =>
+          caps.oauth_providers.includes(p.type)
+        );
+        setProviders(configuredProviders);
         setConnectedSources(sourceList);
 
-        // Handle OAuth callback return (installation_id and provider come from URL via /oauth/complete)
-        if (installationId) {
-          await handleOAuthReturn(installationId, providerFromUrl);
+        // Handle OAuth callback return (connection_id and provider come from URL via /oauth/complete)
+        if (connectionId) {
+          await handleOAuthReturn(connectionId, providerFromUrl);
         }
       } catch {
         // Don't show error on initial load
@@ -109,7 +106,7 @@ export function StepDataSources({
       }
     };
     loadInitialData();
-  }, [installationId, providerFromUrl]);
+  }, [connectionId, providerFromUrl]);
 
   const loadConnectedSources = async () => {
     try {
@@ -123,7 +120,7 @@ export function StepDataSources({
   const loadContainers = async (instId: string, parentId?: string) => {
     setIsLoadingContainers(true);
     try {
-      const result = await getInstallationContainers(instId, undefined, parentId);
+      const result = await getConnectionContainers(instId, undefined, parentId);
       setContainers(result.containers);
       // Only auto-select all on initial load (root level)
       if (!parentId && folderPath.length === 0) {
@@ -139,22 +136,22 @@ export function StepDataSources({
 
   // Navigate into a folder
   const handleDrillDown = async (container: Container) => {
-    if (!selectedInstallation || !container.has_children) return;
+    if (!selectedConnection || !container.has_children) return;
     setFolderPath([...folderPath, { id: container.id, name: container.name }]);
-    await loadContainers(selectedInstallation.id, container.id);
+    await loadContainers(selectedConnection.id, container.id);
   };
 
   // Navigate via breadcrumb
   const handleBreadcrumbClick = async (index: number) => {
-    if (!selectedInstallation) return;
+    if (!selectedConnection) return;
     if (index === -1) {
       // Go to root
       setFolderPath([]);
-      await loadContainers(selectedInstallation.id);
+      await loadContainers(selectedConnection.id);
     } else {
       const newPath = folderPath.slice(0, index + 1);
       setFolderPath(newPath);
-      await loadContainers(selectedInstallation.id, newPath[newPath.length - 1].id);
+      await loadContainers(selectedConnection.id, newPath[newPath.length - 1].id);
     }
   };
 
@@ -163,79 +160,41 @@ export function StepDataSources({
     setPendingProvider(provider);
     setError(null);
 
-    if (provider.configured) {
-      // Fetch existing installations for this provider
-      try {
-        const allInstallations = await listInstallations();
-        const providerInstallations = allInstallations.filter(
-          (i) => i.provider_type === provider.type
-        );
+    // Fetch existing connections for this provider
+    try {
+      const allConnections = await listConnections();
+      const providerConnections = allConnections.filter(
+        (i) => i.provider_type === provider.type
+      );
 
-        if (providerInstallations.length > 0) {
-          // Show picker to choose existing or connect new
-          setExistingInstallations(providerInstallations);
-          setView("installation_picker");
-        } else {
-          // No existing installations, go straight to OAuth
-          await startOAuthFlow(provider);
-        }
-      } catch {
-        // If fetch fails, just go to OAuth
+      if (providerConnections.length > 0) {
+        // Show picker to choose existing or connect new
+        setExistingConnections(providerConnections);
+        setView("connection_picker");
+      } else {
+        // No existing connections, go straight to OAuth
         await startOAuthFlow(provider);
       }
-    } else {
-      // Need to collect credentials first
-      setClientId("");
-      setClientSecret("");
-      setView("credentials");
+    } catch {
+      // If fetch fails, just go to OAuth
+      await startOAuthFlow(provider);
     }
   };
 
-  // Select an existing installation
-  const handleSelectExistingInstallation = async (installation: InstallationSummary) => {
-    setSelectedInstallation(installation);
-    await loadContainers(installation.id);
+  // Select an existing connection
+  const handleSelectExistingConnection = async (connection: ConnectionSummary) => {
+    setSelectedConnection(connection);
+    await loadContainers(connection.id);
     setView("select");
   };
 
-  // Save credentials and start OAuth
-  const handleCredentialsSave = async () => {
-    if (!pendingProvider || !clientId || !clientSecret) return;
-
-    setIsSavingCredentials(true);
-    setError(null);
-
-    try {
-      await saveProviderConfig(pendingProvider.type, {
-        client_id: clientId,
-        client_secret: clientSecret,
-      });
-
-      // Update provider as configured
-      setProviders((prev) =>
-        prev.map((p) =>
-          p.type === pendingProvider.type ? { ...p, configured: true } : p
-        )
-      );
-
-      // Now start OAuth
-      await startOAuthFlow({ ...pendingProvider, configured: true });
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setError(err.message || "Failed to save credentials");
-      } else {
-        setError("Failed to save credentials. Please try again.");
-      }
-    } finally {
-      setIsSavingCredentials(false);
-    }
-  };
+  // Removed: credentials are now managed via environment variables
 
   // Start OAuth redirect
   const startOAuthFlow = async (provider: ProviderListItem) => {
     setView("connecting");
     setError(null);
-    setSelectedInstallation(null);  // Clear any previous installation
+    setSelectedConnection(null);  // Clear any previous connection
     setContainers([]);
     setSelectedContainers(new Set());
 
@@ -243,7 +202,7 @@ export function StepDataSources({
       // Pass "setup" as return_context so OAuth callback returns to FTUE
       const result = await startOAuth(provider.type, undefined, "setup");
       // OAuth provider redirects to API callback, which redirects to /oauth/complete,
-      // which then redirects back here with installation_id and provider in URL params
+      // which then redirects back here with connection_id and provider in URL params
       window.location.href = result.authorization_url;
     } catch (err) {
       if (err instanceof ApiError) {
@@ -256,10 +215,10 @@ export function StepDataSources({
   };
 
   // Handle OAuth callback return
-  const handleOAuthReturn = async (instId: string, providerType?: string) => {
+  const handleOAuthReturn = async (connId: string, providerType?: string) => {
     try {
-      const installation = await getInstallation(instId);
-      setSelectedInstallation(installation);
+      const connection = await getConnection(connId);
+      setSelectedConnection(connection);
 
       // Set pending provider from URL params (passed from /oauth/complete)
       if (providerType) {
@@ -267,11 +226,11 @@ export function StepDataSources({
         if (provider) setPendingProvider(provider);
       }
 
-      await loadContainers(instId);
+      await loadContainers(connId);
       setView("select");
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(err.message || "Failed to load installation");
+        setError(err.message || "Failed to load connection");
       } else {
         setError("Failed to complete connection. Please try again.");
       }
@@ -300,7 +259,7 @@ export function StepDataSources({
 
   // Create source
   const handleCreateSource = async () => {
-    if (!selectedInstallation || selectedContainers.size === 0) return;
+    if (!selectedConnection || selectedContainers.size === 0) return;
 
     setView("creating");
     setError(null);
@@ -310,7 +269,7 @@ export function StepDataSources({
       const latestSources = await listSources().catch(() => connectedSources);
 
       // Generate unique source name
-      const baseName = selectedInstallation.name;
+      const baseName = selectedConnection.name;
       const existingNames = new Set(latestSources.map((s) => s.name));
 
       let sourceName: string;
@@ -328,9 +287,9 @@ export function StepDataSources({
 
       await createSource({
         name: sourceName,
-        provider_type: selectedInstallation.provider_type,
-        installation_id: selectedInstallation.id,
-        selected_containers: Array.from(selectedContainers),
+        provider_type: selectedConnection.provider_type,
+        connection_id: selectedConnection.id,
+        containers: containers.filter((c) => selectedContainers.has(c.id)),
       });
       setCreatedSourceName(sourceName);
       await loadConnectedSources();  // Refresh to include new source
@@ -348,7 +307,7 @@ export function StepDataSources({
   // Add another source
   const handleAddAnother = () => {
     setPendingProvider(null);
-    setSelectedInstallation(null);
+    setSelectedConnection(null);
     setContainers([]);
     setSelectedContainers(new Set());
     setSearchQuery("");
@@ -369,20 +328,17 @@ export function StepDataSources({
 
   // Back navigation
   const handleBack = () => {
-    if (view === "credentials") {
+    if (view === "connection_picker") {
       setPendingProvider(null);
-      setView("selection");
-    } else if (view === "installation_picker") {
-      setPendingProvider(null);
-      setExistingInstallations([]);
+      setExistingConnections([]);
       setView("selection");
     } else if (view === "select") {
-      // Go back to installation picker if we have existing installations
-      if (existingInstallations.length > 0) {
-        setSelectedInstallation(null);
+      // Go back to connection picker if we have existing connections
+      if (existingConnections.length > 0) {
+        setSelectedConnection(null);
         setContainers([]);
         setSelectedContainers(new Set());
-        setView("installation_picker");
+        setView("connection_picker");
       } else {
         handleAddAnother();
       }
@@ -489,7 +445,7 @@ export function StepDataSources({
   }
 
   // Installation picker view
-  if (view === "installation_picker") {
+  if (view === "connection_picker") {
     return (
       <div className="mx-auto max-w-lg">
         <button
@@ -520,30 +476,30 @@ export function StepDataSources({
           </div>
         </div>
 
-        {/* Existing installations */}
+        {/* Existing connections */}
         <div className="mb-6 space-y-3">
           <h3 className="text-sm font-medium text-sercha-fog-grey">
             Existing Connections
           </h3>
-          {existingInstallations.map((installation) => (
+          {existingConnections.map((connection) => (
             <button
-              key={installation.id}
-              onClick={() => handleSelectExistingInstallation(installation)}
+              key={connection.id}
+              onClick={() => handleSelectExistingConnection(connection)}
               className="flex w-full items-center gap-3 rounded-lg border border-sercha-silverline bg-white p-4 text-left transition-all hover:border-sercha-indigo hover:shadow-md"
             >
               <Image
-                src={PROVIDER_ICONS[installation.provider_type] || "/logos/default.png"}
-                alt={installation.provider_type}
+                src={PROVIDER_ICONS[connection.provider_type] || "/logos/default.png"}
+                alt={connection.provider_type}
                 width={32}
                 height={32}
                 className="h-8 w-8"
               />
               <div className="flex-1">
                 <p className="text-sm font-medium text-sercha-ink-slate">
-                  {installation.name}
+                  {connection.name}
                 </p>
                 <p className="text-xs text-sercha-fog-grey">
-                  {installation.account_id} · {installation.source_count} source{installation.source_count !== 1 ? "s" : ""}
+                  {connection.account_id} · {connection.source_count} source{connection.source_count !== 1 ? "s" : ""}
                 </p>
               </div>
               <span className="text-xs text-sercha-indigo">Select →</span>
@@ -584,8 +540,8 @@ export function StepDataSources({
 
   // Container selection view
   if (view === "select") {
-    // Check provider type from selectedInstallation (more reliable than pendingProvider which may not be set after OAuth return)
-    const providerType = selectedInstallation?.provider_type || pendingProvider?.type;
+    // Check provider type from selectedConnection (more reliable than pendingProvider which may not be set after OAuth return)
+    const providerType = selectedConnection?.provider_type || pendingProvider?.type;
     const showFolderNavigation = providerType === "google_drive" || providerType === "onedrive";
 
     return (
@@ -746,147 +702,6 @@ export function StepDataSources({
     );
   }
 
-  // Credentials view
-  if (view === "credentials") {
-    return (
-      <div className="mx-auto max-w-lg">
-        <button
-          onClick={handleBack}
-          className="mb-4 flex items-center gap-1 text-sm text-sercha-fog-grey hover:text-sercha-ink-slate"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back
-        </button>
-
-        <div className="mb-8 flex items-center gap-4">
-          {pendingProvider && (
-            <Image
-              src={PROVIDER_ICONS[pendingProvider.type] || "/logos/default.png"}
-              alt={pendingProvider.name}
-              width={48}
-              height={48}
-              className="h-12 w-12"
-            />
-          )}
-          <div>
-            <h1 className="text-2xl font-semibold text-sercha-ink-slate">
-              Configure {pendingProvider?.name}
-            </h1>
-            <p className="mt-1 text-sm text-sercha-fog-grey">
-              Enter your OAuth app credentials to connect.
-            </p>
-          </div>
-        </div>
-
-        {/* Help Link */}
-        {pendingProvider && PROVIDER_HELP_URLS[pendingProvider.type] && (
-          <div className="mb-6 rounded-lg border border-sercha-indigo/20 bg-sercha-indigo/5 p-4">
-            <p className="text-sm text-sercha-fog-grey">
-              Need to create an OAuth app?{" "}
-              <a
-                href={PROVIDER_HELP_URLS[pendingProvider.type]}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 font-medium text-sercha-indigo hover:underline"
-              >
-                Open {pendingProvider.name} Developer Console
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            </p>
-          </div>
-        )}
-
-        {/* OAuth Redirect URL Hint */}
-        <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
-          <p className="mb-1 text-sm font-medium text-amber-800">
-            OAuth Callback URL
-          </p>
-          <p className="mb-2 text-xs text-amber-700">
-            Set this as the &quot;Redirect URI&quot; or &quot;Callback URL&quot; in your OAuth app settings:
-          </p>
-          <code className="block rounded bg-amber-100 px-3 py-2 text-xs text-amber-900 break-all">
-            {typeof window !== "undefined"
-              ? `${window.location.origin.replace(":3000", ":8080")}/api/v1/oauth/callback`
-              : "http://localhost:8080/api/v1/oauth/callback"}
-          </code>
-        </div>
-
-        <div className="space-y-4">
-          {/* Client ID */}
-          <div>
-            <label className="mb-1.5 block text-sm font-medium text-sercha-ink-slate">
-              Client ID
-            </label>
-            <input
-              type="text"
-              value={clientId}
-              onChange={(e) => setClientId(e.target.value)}
-              className="w-full rounded-lg border border-sercha-silverline bg-white px-4 py-2.5 text-sm text-sercha-ink-slate placeholder:text-sercha-fog-grey focus:border-sercha-indigo focus:outline-none focus:ring-2 focus:ring-sercha-indigo/20"
-              placeholder="Enter client ID"
-              disabled={isSavingCredentials}
-            />
-          </div>
-
-          {/* Client Secret */}
-          <div>
-            <label className="mb-1.5 block text-sm font-medium text-sercha-ink-slate">
-              Client Secret
-            </label>
-            <div className="relative">
-              <input
-                type={showSecret ? "text" : "password"}
-                value={clientSecret}
-                onChange={(e) => setClientSecret(e.target.value)}
-                className="w-full rounded-lg border border-sercha-silverline bg-white px-4 py-2.5 pr-10 text-sm text-sercha-ink-slate placeholder:text-sercha-fog-grey focus:border-sercha-indigo focus:outline-none focus:ring-2 focus:ring-sercha-indigo/20"
-                placeholder="Enter client secret"
-                disabled={isSavingCredentials}
-              />
-              <button
-                type="button"
-                onClick={() => setShowSecret(!showSecret)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-sercha-fog-grey hover:text-sercha-ink-slate"
-              >
-                {showSecret ? <EyeOff size={18} /> : <Eye size={18} />}
-              </button>
-            </div>
-          </div>
-
-          {/* Error */}
-          {error && (
-            <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">
-              {error}
-            </div>
-          )}
-
-          {/* Buttons */}
-          <div className="flex gap-3 pt-2">
-            <button
-              onClick={handleBack}
-              disabled={isSavingCredentials}
-              className="flex-1 rounded-lg border border-sercha-silverline bg-white px-4 py-2.5 text-sm font-medium text-sercha-fog-grey transition-colors hover:bg-sercha-mist"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleCredentialsSave}
-              disabled={isSavingCredentials || !clientId || !clientSecret}
-              className="flex flex-1 items-center justify-center rounded-lg bg-sercha-indigo px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-sercha-indigo/90 focus:outline-none focus:ring-2 focus:ring-sercha-indigo/50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isSavingCredentials ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                "Continue"
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   // Main selection view (default)
   return (
     <div className="mx-auto max-w-2xl">
@@ -958,23 +773,9 @@ export function StepDataSources({
                   {provider.name}
                 </p>
                 <p className="mt-1 text-xs text-sercha-fog-grey">
-                  {provider.configured ? "Ready to connect" : "Requires setup"}
+                  {provider.configured ? "Ready to connect" : "Not available"}
                 </p>
               </button>
-              {provider.configured && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setPendingProvider(provider);
-                    setClientId("");
-                    setClientSecret("");
-                    setView("credentials");
-                  }}
-                  className="mt-2 text-xs text-sercha-indigo hover:underline"
-                >
-                  Reconfigure
-                </button>
-              )}
             </div>
           ))}
         </div>

@@ -6,11 +6,11 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/custodia-labs/sercha-core/internal/core/domain"
-	"github.com/custodia-labs/sercha-core/internal/core/domain/pipeline"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
-	pipelineport "github.com/custodia-labs/sercha-core/internal/core/ports/driven/pipeline"
-	"github.com/custodia-labs/sercha-core/internal/runtime"
+	"github.com/sercha-oss/sercha-core/internal/core/domain"
+	"github.com/sercha-oss/sercha-core/internal/core/domain/pipeline"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
+	pipelineport "github.com/sercha-oss/sercha-core/internal/core/ports/driven/pipeline"
+	"github.com/sercha-oss/sercha-core/internal/runtime"
 )
 
 // We need a ChunkStore for saving chunks separately
@@ -31,13 +31,16 @@ type SyncOrchestrator struct {
 	chunkStore       driven.ChunkStore
 	syncStore        driven.SyncStateStore
 	searchEngine     driven.SearchEngine
+	vectorIndex      driven.VectorIndex
 	connectorFactory driven.ConnectorFactory
 	normaliserReg    driven.NormaliserRegistry
-	legacyPipeline   driven.PostProcessorPipeline
 	services         *runtime.Services
 	logger           *slog.Logger
-	indexingExecutor pipelineport.IndexingExecutor // Optional pipeline executor
+	indexingExecutor pipelineport.IndexingExecutor // Required pipeline executor
 	capabilitySet    *pipeline.CapabilitySet       // Capabilities for pipeline
+	capabilityStore  driven.CapabilityStore        // For fetching capability preferences
+	settingsStore    driven.SettingsStore          // For loading team settings
+	teamID           string                        // Team ID for settings lookup
 }
 
 // SyncOrchestratorConfig holds dependencies for SyncOrchestrator.
@@ -47,13 +50,16 @@ type SyncOrchestratorConfig struct {
 	ChunkStore       driven.ChunkStore
 	SyncStore        driven.SyncStateStore
 	SearchEngine     driven.SearchEngine
+	VectorIndex      driven.VectorIndex
 	ConnectorFactory driven.ConnectorFactory
 	NormaliserReg    driven.NormaliserRegistry
-	LegacyPipeline   driven.PostProcessorPipeline
 	Services         *runtime.Services
 	Logger           *slog.Logger
-	IndexingExecutor pipelineport.IndexingExecutor // Optional pipeline executor
+	IndexingExecutor pipelineport.IndexingExecutor // Required pipeline executor
 	CapabilitySet    *pipeline.CapabilitySet       // Capabilities for pipeline
+	CapabilityStore  driven.CapabilityStore        // For fetching capability preferences
+	SettingsStore    driven.SettingsStore          // For loading team settings
+	TeamID           string                        // Team ID for settings lookup
 }
 
 // NewSyncOrchestrator creates a new sync orchestrator.
@@ -63,19 +69,27 @@ func NewSyncOrchestrator(cfg SyncOrchestratorConfig) *SyncOrchestrator {
 		logger = slog.Default()
 	}
 
+	// IndexingExecutor is now required
+	if cfg.IndexingExecutor == nil {
+		panic("IndexingExecutor is required for SyncOrchestrator")
+	}
+
 	return &SyncOrchestrator{
 		sourceStore:      cfg.SourceStore,
 		documentStore:    cfg.DocumentStore,
 		chunkStore:       cfg.ChunkStore,
 		syncStore:        cfg.SyncStore,
 		searchEngine:     cfg.SearchEngine,
+		vectorIndex:      cfg.VectorIndex,
 		connectorFactory: cfg.ConnectorFactory,
 		normaliserReg:    cfg.NormaliserReg,
-		legacyPipeline:   cfg.LegacyPipeline,
 		services:         cfg.Services,
 		logger:           logger,
 		indexingExecutor: cfg.IndexingExecutor,
 		capabilitySet:    cfg.CapabilitySet,
+		capabilityStore:  cfg.CapabilityStore,
+		settingsStore:    cfg.SettingsStore,
+		teamID:           cfg.TeamID,
 	}
 }
 
@@ -86,6 +100,18 @@ func (o *SyncOrchestrator) SyncSource(ctx context.Context, sourceID string) (*do
 	startTime := time.Now()
 
 	o.logger.Info("starting sync", "source_id", sourceID)
+
+	// Check if sync is enabled in settings
+	settings, err := o.loadSettings(ctx)
+	if err == nil && !settings.SyncEnabled {
+		o.logger.Info("sync disabled in settings", "source_id", sourceID)
+		return &domain.SyncResult{
+			SourceID: sourceID,
+			Success:  false,
+			Error:    "sync is disabled in team settings",
+			Duration: time.Since(startTime).Seconds(),
+		}, nil
+	}
 
 	// Step 1: Get source config
 	source, err := o.sourceStore.Get(ctx, sourceID)
@@ -120,9 +146,14 @@ func (o *SyncOrchestrator) SyncSource(ctx context.Context, sourceID string) (*do
 	// Determine containers to sync
 	// If selected containers are specified, sync each one
 	// Otherwise, sync with empty containerID (provider indexes all content)
-	containers := source.SelectedContainers
-	if len(containers) == 0 {
-		containers = []string{""} // Empty string means sync all accessible content
+	var containerIDs []string
+	if len(source.Containers) > 0 {
+		containerIDs = make([]string, len(source.Containers))
+		for i, c := range source.Containers {
+			containerIDs[i] = c.ID
+		}
+	} else {
+		containerIDs = []string{""} // Empty string means sync all accessible content
 	}
 
 	// Aggregate stats across all containers
@@ -131,7 +162,7 @@ func (o *SyncOrchestrator) SyncSource(ctx context.Context, sourceID string) (*do
 	var syncErrors []string
 
 	// Step 3: Sync each container
-	for _, containerID := range containers {
+	for _, containerID := range containerIDs {
 		containerStats, cursor, err := o.syncContainer(ctx, source, syncState, containerID)
 		if err != nil {
 			o.logger.Error("container sync failed",
@@ -158,7 +189,7 @@ func (o *SyncOrchestrator) SyncSource(ctx context.Context, sourceID string) (*do
 
 	// Step 4: Update final sync state
 	completedAt := time.Now()
-	if len(syncErrors) > 0 && len(syncErrors) == len(containers) {
+	if len(syncErrors) > 0 && len(syncErrors) == len(containerIDs) {
 		// All containers failed
 		syncState.Status = domain.SyncStatusFailed
 		syncState.Error = fmt.Sprintf("all containers failed: %v", syncErrors)
@@ -184,7 +215,7 @@ func (o *SyncOrchestrator) SyncSource(ctx context.Context, sourceID string) (*do
 
 	o.logger.Info("sync completed",
 		"source_id", sourceID,
-		"containers_count", len(containers),
+		"containers_count", len(containerIDs),
 		"duration_seconds", duration,
 		"documents_added", aggregatedStats.DocumentsAdded,
 		"documents_updated", aggregatedStats.DocumentsUpdated,
@@ -234,6 +265,30 @@ func (o *SyncOrchestrator) syncContainer(
 	stats := &domain.SyncStats{}
 	var lastCursor string
 
+	// Full sync (no cursor): wipe all existing indexed data for this source
+	// to prevent orphaned chunks from accumulating across re-syncs.
+	if cursor == "" {
+		o.logger.Info("full sync: clearing existing indexed data", "source_id", source.ID)
+		if o.searchEngine != nil {
+			if err := o.searchEngine.DeleteBySource(ctx, source.ID); err != nil {
+				o.logger.Warn("failed to clear search engine data for source", "source_id", source.ID, "error", err)
+			}
+		}
+		if o.vectorIndex != nil {
+			// Delete embeddings for all documents in this source
+			docs, err := o.documentStore.GetBySource(ctx, source.ID, 10000, 0)
+			if err == nil {
+				docIDs := make([]string, len(docs))
+				for i, d := range docs {
+					docIDs[i] = d.ID
+				}
+				if len(docIDs) > 0 {
+					_ = o.vectorIndex.DeleteByDocuments(ctx, docIDs)
+				}
+			}
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -250,7 +305,22 @@ func (o *SyncOrchestrator) syncContainer(
 			break
 		}
 
+		// Collect document IDs that need old-chunk cleanup (updates/modifications)
+		var updateDocIDs []string
+		for _, change := range changes {
+			if change.Type == domain.ChangeTypeModified {
+				existingDoc, _ := o.documentStore.GetByExternalID(ctx, source.ID, change.ExternalID)
+				if existingDoc != nil {
+					updateDocIDs = append(updateDocIDs, existingDoc.ID)
+				}
+			}
+		}
+
+		// Bulk delete old chunks/embeddings for all updates in one shot
+		o.cleanupOldChunksBatch(ctx, updateDocIDs)
+
 		// Process each document
+		errorsBefore := stats.Errors
 		for _, change := range changes {
 			if err := o.processChange(ctx, source, change, stats); err != nil {
 				o.logger.Warn("failed to process change",
@@ -263,7 +333,16 @@ func (o *SyncOrchestrator) syncContainer(
 			}
 		}
 
-		lastCursor = nextCursor
+		// Only advance cursor if all documents in this batch succeeded
+		if stats.Errors == errorsBefore {
+			lastCursor = nextCursor
+		} else {
+			o.logger.Warn("not advancing cursor due to failed documents",
+				"source_id", source.ID,
+				"container_id", containerID,
+				"failed_count", stats.Errors-errorsBefore,
+			)
+		}
 
 		// No more pages
 		if nextCursor == "" || nextCursor == cursor {
@@ -329,34 +408,64 @@ func (o *SyncOrchestrator) processChange(
 	}
 }
 
-// processDelete handles document deletion.
+// processDelete handles document deletion across all storage layers.
 func (o *SyncOrchestrator) processDelete(
 	ctx context.Context,
 	sourceID string,
 	change *domain.Change,
 	stats *domain.SyncStats,
 ) error {
-	// Find document by external ID
 	doc, err := o.documentStore.GetByExternalID(ctx, sourceID, change.ExternalID)
 	if err != nil {
-		// Document might not exist, which is fine
 		return nil
 	}
 
-	// Delete from search engine
+	// Delete embeddings from vector index
+	if o.vectorIndex != nil {
+		if err := o.vectorIndex.DeleteByDocument(ctx, doc.ID); err != nil {
+			o.logger.Warn("failed to delete embeddings", "doc_id", doc.ID, "error", err)
+		}
+	}
+
+	// Delete from search engine (OpenSearch)
 	if o.searchEngine != nil {
 		if err := o.searchEngine.DeleteByDocument(ctx, doc.ID); err != nil {
 			o.logger.Warn("failed to delete from search engine", "doc_id", doc.ID, "error", err)
 		}
 	}
 
-	// Delete from document store
+	// Delete document (source of truth)
 	if err := o.documentStore.Delete(ctx, doc.ID); err != nil {
 		return fmt.Errorf("failed to delete document: %w", err)
 	}
 
 	stats.DocumentsDeleted++
 	return nil
+}
+
+// cleanupOldChunksBatch removes old search index entries and embeddings for multiple
+// documents in a single bulk operation. This is much faster than per-document deletes.
+// Note: Chunks live in OpenSearch (not PostgreSQL), embeddings live in pgvector.
+func (o *SyncOrchestrator) cleanupOldChunksBatch(ctx context.Context, documentIDs []string) {
+	if len(documentIDs) == 0 {
+		return
+	}
+
+	o.logger.Info("cleaning up old chunks before re-indexing", "document_count", len(documentIDs))
+
+	// Bulk delete from search engine (OpenSearch)
+	if o.searchEngine != nil {
+		if err := o.searchEngine.DeleteByDocuments(ctx, documentIDs); err != nil {
+			o.logger.Warn("failed to bulk delete old chunks from search engine", "error", err)
+		}
+	}
+
+	// Bulk delete embeddings from vector index (pgvector)
+	if o.vectorIndex != nil {
+		if err := o.vectorIndex.DeleteByDocuments(ctx, documentIDs); err != nil {
+			o.logger.Warn("failed to bulk delete old embeddings", "error", err)
+		}
+	}
 }
 
 // processAddOrUpdate handles document creation or update.
@@ -393,7 +502,15 @@ func (o *SyncOrchestrator) processAddOrUpdate(
 		doc.CreatedAt = existingDoc.CreatedAt
 	}
 
-	// Step 6a: Check exclusion rules (TODO: implement exclusion rules)
+	// Step 6a: Check exclusion rules
+	if o.shouldExclude(ctx, doc) {
+		o.logger.Debug("document excluded by sync exclusion pattern",
+			"source_id", source.ID,
+			"path", doc.Path,
+		)
+		// Don't count as error, just skip
+		return nil
+	}
 
 	// Step 6b: Normalise content
 	normalizedContent := content
@@ -402,18 +519,8 @@ func (o *SyncOrchestrator) processAddOrUpdate(
 		normalizedContent = normaliser.Normalise(normalizedContent, doc.MimeType)
 	}
 
-	// Try pipeline executor first
-	if o.indexingExecutor != nil {
-		if err := o.processWithPipeline(ctx, source, doc, normalizedContent, isUpdate, stats); err != nil {
-			o.logger.Warn("pipeline execution failed, falling back to legacy", "error", err)
-			// Fall back to legacy pipeline
-			return o.processWithLegacy(ctx, doc, normalizedContent, isUpdate, stats, now)
-		}
-		return nil
-	}
-
-	// Fallback: Use legacy pipeline
-	return o.processWithLegacy(ctx, doc, normalizedContent, isUpdate, stats, now)
+	// Process with pipeline executor (required)
+	return o.processWithPipeline(ctx, source, doc, normalizedContent, isUpdate, stats)
 }
 
 // processWithPipeline processes a document using the pipeline executor.
@@ -451,6 +558,20 @@ func (o *SyncOrchestrator) processWithPipeline(
 		Metadata:     make(map[string]any),
 	}
 
+	// Fetch capability preferences
+	if o.capabilityStore != nil {
+		// Use "default" teamID - in production, this should come from source metadata
+		prefs, _ := o.capabilityStore.GetPreferences(ctx, "default")
+		if prefs != nil {
+			pipelineContext.Preferences = &pipeline.StagePreferences{
+				TextIndexingEnabled:      prefs.TextIndexingEnabled,
+				EmbeddingIndexingEnabled: prefs.EmbeddingIndexingEnabled,
+				BM25SearchEnabled:        prefs.BM25SearchEnabled,
+				VectorSearchEnabled:      prefs.VectorSearchEnabled,
+			}
+		}
+	}
+
 	// Execute pipeline
 	output, err := o.indexingExecutor.Execute(ctx, pipelineContext, pipelineInput)
 	if err != nil {
@@ -473,79 +594,6 @@ func (o *SyncOrchestrator) processWithPipeline(
 	return nil
 }
 
-// processWithLegacy processes a document using the legacy pipeline.
-func (o *SyncOrchestrator) processWithLegacy(
-	ctx context.Context,
-	doc *domain.Document,
-	content string,
-	isUpdate bool,
-	stats *domain.SyncStats,
-	now time.Time,
-) error {
-	// Step 6c: PostProcess (chunk)
-	chunks := o.legacyPipeline.Process(content)
-
-	// Step 6d: Generate embeddings (if EmbeddingService available)
-	var domainChunks []*domain.Chunk
-	for i, chunk := range chunks {
-		domainChunk := &domain.Chunk{
-			ID:         fmt.Sprintf("%s-chunk-%d", doc.ID, i),
-			DocumentID: doc.ID,
-			SourceID:   doc.SourceID,
-			Content:    chunk.Content,
-			Position:   chunk.Position,
-			StartChar:  chunk.StartOffset,
-			EndChar:    chunk.EndOffset,
-			CreatedAt:  now,
-		}
-
-		// Generate embedding if available
-		if o.services != nil {
-			embeddingService := o.services.EmbeddingService()
-			if embeddingService != nil {
-				embeddings, err := embeddingService.Embed(ctx, []string{chunk.Content})
-				if err != nil {
-					o.logger.Warn("failed to generate embedding", "chunk_id", domainChunk.ID, "error", err)
-				} else if len(embeddings) > 0 {
-					domainChunk.Embedding = embeddings[0]
-				}
-			}
-		}
-
-		domainChunks = append(domainChunks, domainChunk)
-	}
-
-	// Step 6e: Save to DocumentStore
-	if err := o.documentStore.Save(ctx, doc); err != nil {
-		return fmt.Errorf("failed to save document: %w", err)
-	}
-
-	// Save chunks to ChunkStore
-	if o.chunkStore != nil {
-		for _, chunk := range domainChunks {
-			if err := o.chunkStore.Save(ctx, chunk); err != nil {
-				o.logger.Warn("failed to save chunk", "chunk_id", chunk.ID, "error", err)
-			}
-		}
-	}
-
-	// Step 6f & 6g: Index chunks in SearchEngine (Vespa)
-	if o.searchEngine != nil {
-		if err := o.searchEngine.Index(ctx, domainChunks); err != nil {
-			o.logger.Warn("failed to index chunks", "doc_id", doc.ID, "error", err)
-		}
-	}
-
-	// Update stats
-	if isUpdate {
-		stats.DocumentsUpdated++
-	} else {
-		stats.DocumentsAdded++
-	}
-	stats.ChunksIndexed += len(domainChunks)
-
-	return nil
-}
 
 // failSync marks a sync as failed and returns the result.
 func (o *SyncOrchestrator) failSync(
@@ -649,4 +697,91 @@ func (o *SyncOrchestrator) CancelSync(ctx context.Context, sourceID string) erro
 	state.Error = "cancelled by user"
 
 	return o.syncStore.Save(ctx, state)
+}
+
+// loadSettings loads team settings for the sync orchestrator
+func (o *SyncOrchestrator) loadSettings(ctx context.Context) (*domain.Settings, error) {
+	if o.settingsStore == nil {
+		return domain.DefaultSettings(o.teamID), nil
+	}
+	return o.settingsStore.GetSettings(ctx, o.teamID)
+}
+
+// shouldExclude checks if a document should be excluded based on sync exclusion patterns
+func (o *SyncOrchestrator) shouldExclude(ctx context.Context, doc *domain.Document) bool {
+	settings, err := o.loadSettings(ctx)
+	if err != nil || settings.SyncExclusions == nil || !settings.SyncExclusions.HasPatterns() {
+		return false
+	}
+
+	activePatterns := settings.SyncExclusions.GetActivePatterns()
+	return o.matchesExclusionPattern(doc.Path, activePatterns)
+}
+
+// matchesExclusionPattern checks if a path matches any exclusion pattern
+func (o *SyncOrchestrator) matchesExclusionPattern(path string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if o.matchPattern(path, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchPattern matches a path against a pattern
+// Supports:
+// - Exact matches
+// - Glob patterns (*.txt, *.log)
+// - Folder patterns (.git/, node_modules/)
+// - Prefix matching for folder patterns
+func (o *SyncOrchestrator) matchPattern(path, pattern string) bool {
+	// Handle folder patterns (ending with /)
+	if len(pattern) > 0 && pattern[len(pattern)-1] == '/' {
+		// Prefix match for folder patterns
+		// Check if path starts with pattern or contains it as a path component
+		if len(path) >= len(pattern) && path[:len(pattern)] == pattern {
+			return true
+		}
+		// Check if pattern appears as a path component
+		// e.g., pattern ".git/" matches "foo/.git/bar"
+		if len(path) > len(pattern) {
+			for i := 0; i < len(path)-len(pattern); i++ {
+				if path[i] == '/' && path[i+1:i+1+len(pattern)] == pattern {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	// Handle exact filename matches (e.g., ".DS_Store", "Thumbs.db")
+	// Extract filename from path
+	lastSlash := -1
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' {
+			lastSlash = i
+			break
+		}
+	}
+	filename := path
+	if lastSlash >= 0 {
+		filename = path[lastSlash+1:]
+	}
+
+	// Exact match on filename
+	if filename == pattern {
+		return true
+	}
+
+	// Glob pattern matching (*.txt, *.log, etc)
+	if len(pattern) > 2 && pattern[0] == '*' && pattern[1] == '.' {
+		// Extract extension from pattern
+		ext := pattern[1:] // e.g., ".txt"
+		// Check if filename ends with this extension
+		if len(filename) >= len(ext) && filename[len(filename)-len(ext):] == ext {
+			return true
+		}
+	}
+
+	return false
 }

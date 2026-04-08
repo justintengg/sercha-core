@@ -7,12 +7,23 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driven"
-	"github.com/custodia-labs/sercha-core/internal/core/ports/driving"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driven"
+	"github.com/sercha-oss/sercha-core/internal/core/ports/driving"
 )
+
+// stripTrailingSlash removes trailing slashes from request paths (except root)
+func stripTrailingSlash(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" && strings.HasSuffix(r.URL.Path, "/") {
+			r.URL.Path = strings.TrimSuffix(r.URL.Path, "/")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // Pinger is a simple health check interface
 type Pinger interface {
@@ -32,23 +43,27 @@ type Server struct {
 	sourceService       driving.SourceService
 	docService          driving.DocumentService
 	settingsService     driving.SettingsService
-	vespaAdminService   driving.VespaAdminService
 	providerService     driving.ProviderService
 	oauthService        driving.OAuthService
-	installationService driving.InstallationService
+	connectionService   driving.ConnectionService
 	syncOrchestrator    driving.SyncOrchestrator
+	capabilitiesService driving.CapabilitiesService
+	setupService        driving.SetupService
+	adminService        driving.AdminService
 
 	// Infrastructure
-	taskQueue   driven.TaskQueue
-	db          Pinger // PostgreSQL health check
-	redisClient Pinger // Redis health check (optional)
+	taskQueue           driven.TaskQueue
+	searchQueryRepo     driven.SearchQueryRepository // for search tracking
+	db                  Pinger                       // PostgreSQL health check
+	redisClient         Pinger                       // Redis health check (optional)
 }
 
 // Config holds server configuration
 type Config struct {
-	Host    string
-	Port    int
-	Version string
+	Host        string
+	Port        int
+	Version     string
+	CORSOrigins []string
 }
 
 // DefaultConfig returns sensible defaults
@@ -69,12 +84,15 @@ func NewServer(
 	sourceService driving.SourceService,
 	docService driving.DocumentService,
 	settingsService driving.SettingsService,
-	vespaAdminService driving.VespaAdminService,
 	providerService driving.ProviderService,
 	oauthService driving.OAuthService,
-	installationService driving.InstallationService,
+	connectionService driving.ConnectionService,
 	syncOrchestrator driving.SyncOrchestrator,
+	capabilitiesService driving.CapabilitiesService,
+	setupService driving.SetupService,
+	adminService driving.AdminService,
 	taskQueue driven.TaskQueue,
+	searchQueryRepo driven.SearchQueryRepository,
 	db Pinger,
 	redisClient Pinger, // can be nil
 ) *Server {
@@ -87,19 +105,29 @@ func NewServer(
 		sourceService:       sourceService,
 		docService:          docService,
 		settingsService:     settingsService,
-		vespaAdminService:   vespaAdminService,
 		providerService:     providerService,
 		oauthService:        oauthService,
-		installationService: installationService,
+		connectionService:   connectionService,
 		syncOrchestrator:    syncOrchestrator,
+		capabilitiesService: capabilitiesService,
+		setupService:        setupService,
+		adminService:        adminService,
 		taskQueue:           taskQueue,
+		searchQueryRepo:     searchQueryRepo,
 		db:                  db,
 		redisClient:         redisClient,
 	}
 
+	// Build handler chain: CORS -> strip trailing slash -> router
+	handler := stripTrailingSlash(s.router)
+	if len(cfg.CORSOrigins) > 0 {
+		corsMiddleware := NewCORSMiddleware(cfg.CORSOrigins)
+		handler = corsMiddleware.Handler(handler)
+	}
+
 	s.httpServer = &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Handler:      s.router,
+		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -118,13 +146,15 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("GET /health", s.handleHealth)
 	s.router.HandleFunc("GET /ready", s.handleReady)
 	s.router.HandleFunc("GET /version", s.handleVersion)
+	s.router.HandleFunc("GET /api/v1/capabilities", s.handleGetCapabilities)
 
 	// Auth endpoints (public)
 	s.router.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	s.router.HandleFunc("POST /api/v1/auth/refresh", s.handleRefresh)
 
-	// Setup endpoint (public, one-time use)
+	// Setup endpoints (public, no auth required)
 	s.router.HandleFunc("POST /api/v1/setup", s.handleSetup)
+	s.router.HandleFunc("GET /api/v1/setup/status", s.handleSetupStatus)
 
 	// Auth endpoints (authenticated)
 	s.router.Handle("POST /api/v1/auth/logout",
@@ -141,6 +171,15 @@ func (s *Server) setupRoutes() {
 	s.router.Handle("POST /api/v1/users",
 		authMiddleware.Authenticate(
 			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleCreateUser))))
+	s.router.Handle("GET /api/v1/users/{id}",
+		authMiddleware.Authenticate(
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetUser))))
+	s.router.Handle("PUT /api/v1/users/{id}",
+		authMiddleware.Authenticate(
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleUpdateUser))))
+	s.router.Handle("POST /api/v1/users/{id}/reset-password",
+		authMiddleware.Authenticate(
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleResetUserPassword))))
 	s.router.Handle("DELETE /api/v1/users/{id}",
 		authMiddleware.Authenticate(
 			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleDeleteUser))))
@@ -154,6 +193,8 @@ func (s *Server) setupRoutes() {
 		authMiddleware.Authenticate(http.HandlerFunc(s.handleGetDocument)))
 	s.router.Handle("GET /api/v1/documents/{id}/chunks",
 		authMiddleware.Authenticate(http.HandlerFunc(s.handleGetDocumentChunks)))
+	s.router.Handle("GET /api/v1/documents/{id}/open",
+		authMiddleware.Authenticate(http.HandlerFunc(s.handleOpenDocument)))
 
 	// Source endpoints (admin-only for mutations)
 	s.router.Handle("GET /api/v1/sources",
@@ -209,36 +250,53 @@ func (s *Server) setupRoutes() {
 	s.router.Handle("POST /api/v1/settings/ai/test",
 		authMiddleware.Authenticate(
 			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleTestAIConnection))))
+	s.router.Handle("GET /api/v1/settings/ai/providers",
+		authMiddleware.Authenticate(http.HandlerFunc(s.handleGetAIProviders)))
+
+	// Capability preferences endpoints (admin-only)
+	s.router.Handle("GET /api/v1/capability-preferences",
+		authMiddleware.Authenticate(
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetCapabilityPreferences))))
+	s.router.Handle("PUT /api/v1/capability-preferences",
+		authMiddleware.Authenticate(
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleUpdateCapabilityPreferences))))
 
 	// Admin endpoints (admin-only)
 	s.router.Handle("GET /api/v1/admin/stats",
 		authMiddleware.Authenticate(
 			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetAdminStats))))
 
-	// Vespa admin endpoints (admin-only)
-	s.router.Handle("POST /api/v1/admin/vespa/connect",
+	// Admin dashboard endpoints (admin-only)
+	s.router.Handle("GET /api/v1/admin/jobs",
 		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleVespaConnect))))
-	s.router.Handle("GET /api/v1/admin/vespa/status",
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleListJobs))))
+	s.router.Handle("GET /api/v1/admin/jobs/upcoming",
 		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleVespaStatus))))
-	s.router.Handle("GET /api/v1/admin/vespa/health",
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetUpcomingJobs))))
+	s.router.Handle("GET /api/v1/admin/jobs/{id}",
 		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleVespaHealth))))
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetJob))))
+	s.router.Handle("GET /api/v1/admin/jobs/stats",
+		authMiddleware.Authenticate(
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetJobStats))))
+	s.router.Handle("GET /api/v1/admin/search/analytics",
+		authMiddleware.Authenticate(
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetSearchAnalytics))))
+	s.router.Handle("GET /api/v1/admin/search/history",
+		authMiddleware.Authenticate(
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetSearchHistory))))
+	s.router.Handle("GET /api/v1/admin/search/metrics",
+		authMiddleware.Authenticate(
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetSearchMetrics))))
+	s.router.Handle("POST /api/v1/admin/reindex",
+		authMiddleware.Authenticate(
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleTriggerReindex))))
 
 	// Provider configuration endpoints (admin-only)
+	// Note: Provider credentials are now managed via environment variables, not API
 	s.router.Handle("GET /api/v1/providers",
 		authMiddleware.Authenticate(
 			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleListProviders))))
-	s.router.Handle("GET /api/v1/providers/{type}/config",
-		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetProviderConfig))))
-	s.router.Handle("POST /api/v1/providers/{type}/config",
-		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleSaveProviderConfig))))
-	s.router.Handle("DELETE /api/v1/providers/{type}/config",
-		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleDeleteProviderConfig))))
 
 	// OAuth flow endpoints (admin-only for authorization initiation)
 	s.router.Handle("POST /api/v1/oauth/{provider}/authorize",
@@ -247,30 +305,33 @@ func (s *Server) setupRoutes() {
 	// Callback is public - receives redirects from OAuth providers
 	s.router.HandleFunc("GET /api/v1/oauth/callback", s.handleOAuthCallback)
 
-	// Installation endpoints (admin-only)
-	s.router.Handle("POST /api/v1/installations",
+	// Connection endpoints (admin-only)
+	s.router.Handle("POST /api/v1/connections",
 		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleCreateInstallation))))
-	s.router.Handle("GET /api/v1/installations",
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleCreateConnection))))
+	s.router.Handle("GET /api/v1/connections",
 		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleListInstallations))))
-	s.router.Handle("GET /api/v1/installations/{id}",
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleListConnections))))
+	s.router.Handle("GET /api/v1/connections/{id}",
 		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetInstallation))))
-	s.router.Handle("DELETE /api/v1/installations/{id}",
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetConnection))))
+	s.router.Handle("DELETE /api/v1/connections/{id}",
 		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleDeleteInstallation))))
-	s.router.Handle("GET /api/v1/installations/{id}/containers",
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleDeleteConnection))))
+	s.router.Handle("GET /api/v1/connections/{id}/containers",
 		authMiddleware.Authenticate(
 			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleListContainers))))
-	s.router.Handle("POST /api/v1/installations/{id}/test",
+	s.router.Handle("GET /api/v1/connections/{id}/sources",
 		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleTestInstallation))))
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleGetConnectionSources))))
+	s.router.Handle("POST /api/v1/connections/{id}/test",
+		authMiddleware.Authenticate(
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleTestConnection))))
 
-	// Source selection endpoint (admin-only)
-	s.router.Handle("PUT /api/v1/sources/{id}/selection",
+	// Source container management endpoint (admin-only)
+	s.router.Handle("PUT /api/v1/sources/{id}/containers",
 		authMiddleware.Authenticate(
-			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleUpdateSourceSelection))))
+			authMiddleware.RequireAdmin(http.HandlerFunc(s.handleUpdateSourceContainers))))
 }
 
 // Start starts the HTTP server with graceful shutdown

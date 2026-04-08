@@ -5,7 +5,7 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: sercha
       POSTGRES_PASSWORD: sercha_dev
@@ -20,27 +20,31 @@ services:
       timeout: 5s
       retries: 5
 
-  vespa:
-    image: vespaengine/vespa:8
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=admin
     ports:
-      - "19071:19071"
+      - "9200:9200"
     volumes:
-      - vespa_data:/opt/vespa/var
+      - opensearch_data:/usr/share/opensearch/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:19071/state/v1/health"]
+      test: ["CMD-SHELL", "curl -s http://localhost:9200 || exit 1"]
       interval: 10s
-      timeout: 10s
-      retries: 12
-      start_period: 60s
+      timeout: 5s
+      retries: 5
 
   sercha:
-    image: ghcr.io/custodia-labs/sercha-core:latest
+    image: ghcr.io/sercha-oss/sercha-core:latest
     environment:
       DATABASE_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
-      VESPA_CONFIG_URL: http://vespa:19071
-      VESPA_CONTAINER_URL: http://vespa:8080
       JWT_SECRET: change-me-in-production
       PORT: 8080
+      OPENSEARCH_URL: http://opensearch:9200
+      PGVECTOR_URL: postgres://sercha:sercha_dev@postgres:5432/sercha?sslmode=disable
+      PGVECTOR_DIMENSIONS: "1536"
       # UI configuration (for CORS and OAuth redirects)
       UI_BASE_URL: http://localhost:3000
       CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:3001
@@ -55,7 +59,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      vespa:
+      opensearch:
         condition: service_healthy
 
   # UI Build (optional, use --profile ui)
@@ -88,5 +92,5 @@ services:
 
 volumes:
   postgres_data:
-  vespa_data:
+  opensearch_data:
   ui_static:

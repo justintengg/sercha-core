@@ -40,73 +40,12 @@ export interface SetupResponse {
   message: string;
 }
 
-export interface VespaStatus {
-  connected: boolean;
-  endpoint: string;
-  dev_mode: boolean;
-  schema_mode: "hybrid" | "bm25";
-  embeddings_enabled: boolean;
-  embedding_dim: number;
-  healthy: boolean;
-  indexed_chunks: number;
-  can_upgrade?: boolean;
-  reindex_required?: boolean;
-}
-
-export interface VespaMetrics {
-  documents: {
-    total: number;
-    ready: number;
-    active: number;
-    removed: number;
-  };
-  storage: {
-    disk_used_bytes: number;
-    disk_used_percent: number;
-    memory_used_bytes: number;
-    memory_used_percent: number;
-  };
-  query_performance: {
-    total_queries: number;
-    queries_per_second: number;
-    avg_latency_ms: number;
-    failed_queries: number;
-    degraded_queries: number;
-    empty_results: number;
-  };
-  feed: {
-    total_operations: number;
-    succeeded_operations: number;
-    failed_operations: number;
-    pending_operations: number;
-    avg_latency_ms: number;
-  };
-  nodes: VespaNodeMetrics[];
-  timestamp: number;
-}
-
-export interface VespaNodeMetrics {
-  hostname: string;
-  role: "container" | "content";
-  document_count: number;
-  disk_used_bytes: number;
-  disk_used_percent: number;
-  memory_used_bytes: number;
-  memory_used_percent: number;
-}
-
-export interface VespaConnectRequest {
-  endpoint: string;
-  dev_mode?: boolean;
-}
 
 export type AIProvider = "openai" | "anthropic" | "ollama" | "cohere" | "voyage";
 
 export interface AIProviderConfig {
   provider: AIProvider;
   model: string;
-  api_key?: string;
-  base_url?: string;
 }
 
 export interface AISettingsRequest {
@@ -128,21 +67,10 @@ export interface AISettingsResponse {
   llm: AIProviderInfo;
 }
 
-// Vespa service status within AI settings context
-export interface VespaServiceStatus {
-  connected: boolean;
-  schema_mode: "hybrid" | "bm25" | "";
-  embeddings_enabled: boolean;
-  embedding_dim?: number;
-  can_upgrade: boolean;
-  healthy: boolean;
-}
-
 // Response from GET /api/v1/settings/ai/status
 export interface AISettingsStatus {
   embedding: { available: boolean; provider?: string; embedding_dim?: number };
   llm: { available: boolean; provider?: string };
-  vespa: VespaServiceStatus;
   effective_search_mode: string;
   reindex_required: boolean;
   reindex_reason?: string;
@@ -180,15 +108,30 @@ export interface ProviderListItem {
   enabled: boolean;
 }
 
-export interface ProviderConfigRequest {
-  client_id: string;
-  client_secret: string;
+export interface CapabilityStatus {
+  available: boolean;
+  enabled: boolean;
+  active: boolean;
 }
 
-export interface ProviderConfigResponse {
-  type: string;
-  configured: boolean;
-  enabled: boolean;
+export interface CapabilitiesResponse {
+  oauth_providers: string[];
+  ai_providers: {
+    embedding: string[];
+    llm: string[];
+  };
+  features: {
+    text_indexing: CapabilityStatus;
+    embedding_indexing: CapabilityStatus;
+    bm25_search: CapabilityStatus;
+    vector_search: CapabilityStatus;
+  };
+  limits: {
+    sync_min_interval: number;
+    sync_max_interval: number;
+    max_workers: number;
+    max_results_per_page: number;
+  };
 }
 
 export interface OAuthAuthorizeResponse {
@@ -196,7 +139,7 @@ export interface OAuthAuthorizeResponse {
   state: string;
 }
 
-export interface InstallationSummary {
+export interface ConnectionSummary {
   id: string;
   name: string;
   provider_type: string;
@@ -227,8 +170,8 @@ export interface CreateSourceRequest {
   name: string;
   provider_type: string;
   config?: Record<string, unknown>;
-  installation_id: string;
-  selected_containers: string[];
+  connection_id: string;
+  containers: Container[];
 }
 
 export interface Source {
@@ -239,6 +182,10 @@ export interface Source {
   document_count: number;
   last_synced?: string;
   status: "healthy" | "syncing" | "error";
+  connection_id?: string;
+  containers?: string[];
+  created_at?: string;
+  updated_at?: string;
 }
 
 // Matches backend domain.SourceSummary
@@ -249,8 +196,8 @@ export interface SourceSummaryResponse {
     provider_type: string;
     config: Record<string, unknown>;
     enabled: boolean;
-    installation_id?: string;
-    selected_containers?: string[];
+    connection_id?: string;
+    containers?: string[];
     created_at: string;
     updated_at: string;
     created_by?: string;
@@ -269,6 +216,7 @@ export interface SourceSummary {
   document_count: number;
   last_synced?: string;
   status: "healthy" | "syncing" | "error";
+  connection_id?: string;
 }
 
 export interface SyncState {
@@ -307,35 +255,15 @@ export interface SearchRequest {
   source_ids?: string[];
 }
 
-export interface SearchChunk {
-  id: string;
+export interface SearchResultItem {
   document_id: string;
   source_id: string;
-  content: string;
-  position: number;
-  start_char: number;
-  end_char: number;
-  created_at: string;
-}
-
-export interface SearchDocument {
-  id: string;
-  source_id: string;
-  external_id: string;
-  path: string;
   title: string;
+  path: string;
   mime_type: string;
-  metadata: Record<string, string>;
-  created_at: string;
-  updated_at: string;
-  indexed_at: string;
-}
-
-export interface SearchResultItem {
-  chunk: SearchChunk;
-  document: SearchDocument;
+  snippet: string;
   score: number;
-  highlights?: string[];
+  indexed_at: string;
 }
 
 export interface SearchResponse {
@@ -367,8 +295,6 @@ export interface Settings {
   max_results_per_page: number;
   sync_interval_minutes: number;
   sync_enabled: boolean;
-  semantic_search_enabled: boolean;
-  auto_suggest_enabled: boolean;
   sync_exclusions?: SyncExclusionSettings;
   updated_at: string;
   updated_by: string;
@@ -379,8 +305,6 @@ export interface UpdateSettingsRequest {
   results_per_page?: number;
   sync_interval_minutes?: number;
   sync_enabled?: boolean;
-  semantic_search_enabled?: boolean;
-  auto_suggest_enabled?: boolean;
   sync_exclusions?: SyncExclusionSettings;
 }
 
@@ -439,7 +363,7 @@ export interface Document {
   external_id: string;
   title: string;
   url?: string;
-  content_type: string;
+  mime_type: string;
   metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -471,8 +395,8 @@ export interface UpdateSourceRequest {
   enabled?: boolean;
 }
 
-export interface UpdateSourceSelectionRequest {
-  selected_containers: string[];
+export interface UpdateSourceContainersRequest {
+  containers: string[];
 }
 
 export interface VersionResponse {
@@ -490,7 +414,6 @@ export interface SetupStatusResponse {
   setup_complete: boolean;
   has_users: boolean;
   has_sources: boolean;
-  vespa_connected: boolean;
 }
 
 // API Error class
@@ -682,33 +605,6 @@ export async function getSetupStatus(): Promise<SetupStatusResponse> {
   return response.json();
 }
 
-// ========== Vespa API ==========
-
-export async function getVespaStatus(): Promise<VespaStatus> {
-  return apiFetch<VespaStatus>("/api/v1/admin/vespa/status");
-}
-
-export async function connectVespa(data: VespaConnectRequest): Promise<VespaStatus> {
-  return apiFetch<VespaStatus>("/api/v1/admin/vespa/connect", {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
-}
-
-export async function disconnectVespa(): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>("/api/v1/admin/vespa", {
-    method: "DELETE",
-  });
-}
-
-export async function checkVespaHealth(): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>("/api/v1/admin/vespa/health");
-}
-
-export async function getVespaMetrics(): Promise<VespaMetrics> {
-  return apiFetch<VespaMetrics>("/api/v1/admin/vespa/metrics");
-}
-
 // ========== AI Settings API ==========
 
 export async function getAISettings(): Promise<AISettingsResponse> {
@@ -728,18 +624,6 @@ export async function testAIConnection(): Promise<{ status: string }> {
   });
 }
 
-export async function deleteEmbeddingConfig(): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>("/api/v1/settings/ai/embedding", {
-    method: "DELETE",
-  });
-}
-
-export async function deleteLLMConfig(): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>("/api/v1/settings/ai/llm", {
-    method: "DELETE",
-  });
-}
-
 export async function getAIProviders(): Promise<AIProvidersResponse> {
   return apiFetch<AIProvidersResponse>("/api/v1/settings/ai/providers");
 }
@@ -750,22 +634,8 @@ export async function listProviders(): Promise<ProviderListItem[]> {
   return apiFetch<ProviderListItem[]>("/api/v1/providers");
 }
 
-export async function getProviderConfig(type: string): Promise<ProviderConfigResponse> {
-  return apiFetch<ProviderConfigResponse>(`/api/v1/providers/${type}/config`);
-}
-
-export async function saveProviderConfig(
-  type: string,
-  data: ProviderConfigRequest
-): Promise<ProviderConfigResponse> {
-  return apiFetch<ProviderConfigResponse>(`/api/v1/providers/${type}/config`, {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
-}
-
-export async function deleteProviderConfig(type: string): Promise<void> {
-  await apiFetch(`/api/v1/providers/${type}/config`, { method: "DELETE" });
+export async function getCapabilities(): Promise<CapabilitiesResponse> {
+  return apiFetch<CapabilitiesResponse>("/api/v1/capabilities");
 }
 
 // ========== OAuth API ==========
@@ -785,27 +655,13 @@ export async function startOAuth(
   });
 }
 
-export async function handleOAuthCallback(
-  code: string,
-  state: string,
-  provider: string
-): Promise<{ installation: InstallationSummary; message: string }> {
-  return apiFetch<{ installation: InstallationSummary; message: string }>(
-    `/api/v1/oauth/${provider}/exchange`,
-    {
-      method: "POST",
-      body: JSON.stringify({ code, state }),
-    }
-  );
+// ========== Connections API ==========
+
+export async function listConnections(): Promise<ConnectionSummary[]> {
+  return apiFetch<ConnectionSummary[]>("/api/v1/connections");
 }
 
-// ========== Installations API ==========
-
-export async function listInstallations(): Promise<InstallationSummary[]> {
-  return apiFetch<InstallationSummary[]>("/api/v1/installations");
-}
-
-export async function getInstallationContainers(
+export async function getConnectionContainers(
   id: string,
   cursor?: string,
   parentId?: string
@@ -814,7 +670,7 @@ export async function getInstallationContainers(
   if (cursor) params.set("cursor", cursor);
   if (parentId) params.set("parent", parentId);
   const queryString = params.toString();
-  return apiFetch<ContainerListResponse>(`/api/v1/installations/${id}/containers${queryString ? `?${queryString}` : ""}`);
+  return apiFetch<ContainerListResponse>(`/api/v1/connections/${id}/containers${queryString ? `?${queryString}` : ""}`);
 }
 
 // ========== Sources API ==========
@@ -830,6 +686,7 @@ export async function listSources(): Promise<SourceSummary[]> {
     document_count: item.document_count,
     last_synced: item.last_sync_at,
     status: mapSyncStatus(item.sync_status),
+    connection_id: item.source.connection_id,
   }));
 }
 
@@ -894,10 +751,11 @@ export async function getDocumentURL(id: string): Promise<string> {
 
 // ========== Search API ==========
 
-export async function search(data: SearchRequest): Promise<SearchResponse> {
+export async function search(data: SearchRequest, signal?: AbortSignal): Promise<SearchResponse> {
   return apiFetch<SearchResponse>("/api/v1/search", {
     method: "POST",
     body: JSON.stringify(data),
+    signal,
   });
 }
 
@@ -947,23 +805,23 @@ export async function getAIStatus(): Promise<AISettingsStatus> {
   return apiFetch<AISettingsStatus>("/api/v1/settings/ai/status");
 }
 
-// ========== Additional Installation APIs ==========
+// ========== Additional Connection APIs ==========
 
-export async function getInstallation(id: string): Promise<InstallationSummary> {
-  return apiFetch<InstallationSummary>(`/api/v1/installations/${id}`);
+export async function getConnection(id: string): Promise<ConnectionSummary> {
+  return apiFetch<ConnectionSummary>(`/api/v1/connections/${id}`);
 }
 
-export async function deleteInstallation(id: string): Promise<void> {
-  await apiFetch(`/api/v1/installations/${id}`, { method: "DELETE" });
+export async function deleteConnection(id: string): Promise<void> {
+  await apiFetch(`/api/v1/connections/${id}`, { method: "DELETE" });
 }
 
-export async function testInstallation(id: string): Promise<{ status: string; message?: string }> {
-  return apiFetch<{ status: string; message?: string }>(`/api/v1/installations/${id}/test`, {
+export async function testConnection(id: string): Promise<{ status: string; message?: string }> {
+  return apiFetch<{ status: string; message?: string }>(`/api/v1/connections/${id}/test`, {
     method: "POST",
   });
 }
 
-export interface InstallationSourceSummary {
+export interface ConnectionSourceSummary {
   source: {
     id: string;
     name: string;
@@ -975,9 +833,21 @@ export interface InstallationSourceSummary {
   last_sync_at?: string;
 }
 
-export async function getInstallationSources(id: string): Promise<InstallationSourceSummary[]> {
-  return apiFetch<InstallationSourceSummary[]>(`/api/v1/installations/${id}/sources`);
+export async function getConnectionSources(id: string): Promise<ConnectionSourceSummary[]> {
+  return apiFetch<ConnectionSourceSummary[]>(`/api/v1/connections/${id}/sources`);
 }
+
+// Backward compatibility aliases
+export type InstallationSummary = ConnectionSummary;
+export type InstallationSourceSummary = ConnectionSourceSummary;
+export const listInstallations = listConnections;
+export const getInstallation = getConnection;
+export const deleteInstallation = deleteConnection;
+export const testInstallation = testConnection;
+export const getInstallationContainers = getConnectionContainers;
+export const getInstallationSources = getConnectionSources;
+export type UpdateSourceSelectionRequest = UpdateSourceContainersRequest;
+export const updateSourceSelection = updateSourceContainers;
 
 // ========== Additional Source APIs ==========
 
@@ -992,11 +862,11 @@ export async function updateSource(id: string, data: UpdateSourceRequest): Promi
   });
 }
 
-export async function updateSourceSelection(
+export async function updateSourceContainers(
   id: string,
-  data: UpdateSourceSelectionRequest
+  data: UpdateSourceContainersRequest
 ): Promise<Source> {
-  return apiFetch<Source>(`/api/v1/sources/${id}/selection`, {
+  return apiFetch<Source>(`/api/v1/sources/${id}/containers`, {
     method: "PUT",
     body: JSON.stringify(data),
   });
@@ -1052,57 +922,13 @@ export async function getVersion(): Promise<VersionResponse> {
 
 // ========== Job History API ==========
 
-export interface JobSummary {
+// Task represents a background job (matches domain.Task)
+export interface Task {
   id: string;
   type: string;
-  status: "pending" | "processing" | "completed" | "failed";
-  created_at: string;
-  started_at?: string;
-  completed_at?: string;
-  duration_ms?: number;
-  attempts: number;
-  error?: string;
-}
-
-export interface JobHistoryResponse {
-  jobs: JobSummary[];
-  total: number;
-  limit: number;
-  offset: number;
-}
-
-export interface PendingJob {
-  id: string;
-  type: string;
-  status: string;
-  created_at: string;
-  scheduled_for: string;
-  priority: number;
-  payload?: Record<string, string>;
-}
-
-export interface ScheduledJob {
-  id: string;
-  name: string;
-  type: string;
-  interval_minutes: number;
-  enabled: boolean;
-  last_run?: string;
-  next_run: string;
-  last_error?: string;
-}
-
-export interface UpcomingJobsResponse {
-  pending_tasks: PendingJob[];
-  scheduled_tasks: ScheduledJob[];
-}
-
-export interface JobDetail {
-  id: string;
-  type: string;
-  status: string;
   team_id: string;
   payload?: Record<string, string>;
+  status: "pending" | "processing" | "completed" | "failed";
   priority: number;
   attempts: number;
   max_attempts: number;
@@ -1112,126 +938,229 @@ export interface JobDetail {
   started_at?: string;
   completed_at?: string;
   scheduled_for: string;
-  duration_ms?: number;
 }
 
+// JobHistory represents the job history response (matches domain.JobHistory)
+export interface JobHistory {
+  jobs: Task[];
+  total_count: number;
+  has_more: boolean;
+}
+
+// ScheduledTask represents a recurring task schedule (matches domain.ScheduledTask)
+export interface ScheduledTask {
+  id: string;
+  name: string;
+  type: string;
+  team_id: string;
+  interval: number; // Duration in nanoseconds from backend, will be converted to minutes in UI
+  enabled: boolean;
+  last_run?: string;
+  next_run: string;
+  last_error?: string;
+}
+
+// UpcomingJobs represents pending and scheduled jobs (matches domain.UpcomingJobs)
+export interface UpcomingJobs {
+  pending_tasks: Task[];
+  scheduled_tasks: ScheduledTask[];
+  next_scheduled_run?: string;
+}
+
+// RetryAttempt represents a single retry attempt (matches domain.RetryAttempt)
+export interface RetryAttempt {
+  attempt: number;
+  error: string;
+  timestamp: string;
+}
+
+// JobDetail represents detailed job information (matches domain.JobDetail)
+export interface JobDetail {
+  task: Task;
+  source_name?: string;
+  execution_logs?: string[];
+  retry_history?: RetryAttempt[];
+}
+
+// JobStats represents aggregated job statistics (matches domain.JobStats)
 export interface JobStats {
-  pending: number;
-  processing: number;
-  completed: number;
-  failed: number;
-  oldest_pending_age_seconds: number;
+  total_jobs: number;
+  pending_jobs: number;
+  processing_jobs: number;
+  completed_jobs: number;
+  failed_jobs: number;
+  success_rate: number;
+  average_duration_ms: number;
+  total_retries: number;
+  jobs_by_type: Record<string, number>;
+  period: AnalyticsPeriod;
 }
 
-export interface ListJobHistoryParams {
+export interface ListJobsParams {
   limit?: number;
   offset?: number;
-  status?: "completed" | "failed";
+  status?: "pending" | "processing" | "completed" | "failed";
   type?: string;
 }
 
-export async function getJobHistory(params?: ListJobHistoryParams): Promise<JobHistoryResponse> {
+export async function getJobs(params?: ListJobsParams): Promise<JobHistory> {
   const searchParams = new URLSearchParams();
   if (params?.limit) searchParams.set("limit", params.limit.toString());
   if (params?.offset) searchParams.set("offset", params.offset.toString());
   if (params?.status) searchParams.set("status", params.status);
   if (params?.type) searchParams.set("type", params.type);
   const query = searchParams.toString() ? `?${searchParams.toString()}` : "";
-  return apiFetch<JobHistoryResponse>(`/api/v1/admin/jobs${query}`);
+  return apiFetch<JobHistory>(`/api/v1/admin/jobs${query}`);
 }
 
-export async function getUpcomingJobs(): Promise<UpcomingJobsResponse> {
-  return apiFetch<UpcomingJobsResponse>("/api/v1/admin/jobs/upcoming");
+export async function getUpcomingJobs(): Promise<UpcomingJobs> {
+  return apiFetch<UpcomingJobs>("/api/v1/admin/jobs/upcoming");
 }
 
 export async function getJob(id: string): Promise<JobDetail> {
   return apiFetch<JobDetail>(`/api/v1/admin/jobs/${id}`);
 }
 
-export async function getJobStats(): Promise<JobStats> {
-  return apiFetch<JobStats>("/api/v1/admin/jobs/stats");
+export async function getJobStats(period?: "24h" | "7d" | "30d"): Promise<JobStats> {
+  const params = period ? `?period=${period}` : "";
+  return apiFetch<JobStats>(`/api/v1/admin/jobs/stats${params}`);
 }
+
+// Backward compatibility aliases
+export type ListJobHistoryParams = ListJobsParams;
+export type JobHistoryResponse = JobHistory;
+export const getJobHistory = getJobs;
 
 // ========== Search Analytics API ==========
 
-export interface QueryCount {
+// AnalyticsPeriod represents the time range for analytics (matches domain.AnalyticsPeriod)
+export interface AnalyticsPeriod {
+  start: string;
+  end: string;
+}
+
+// QueryFrequency represents how often a query appears (matches domain.QueryFrequency)
+export interface QueryFrequency {
   query: string;
   count: number;
 }
 
-export interface SearchAnalytics {
-  total_searches: number;
-  searches_today: number;
-  searches_this_week: number;
-  avg_latency_ms: number;
-  avg_result_count: number;
-  unique_users: number;
-  top_queries: QueryCount[];
-}
-
-export interface SearchQueryRecord {
+// SearchQuery represents a logged search query (matches domain.SearchQuery)
+export interface SearchQuery {
   id: string;
-  user_id: string;
   team_id: string;
+  user_id: string;
   query: string;
   mode: string;
   result_count: number;
-  latency_ms: number;
+  duration: number; // nanoseconds
   source_ids?: string[];
+  has_filters: boolean;
   created_at: string;
 }
 
-export interface SearchHistoryResponse {
-  searches: SearchQueryRecord[];
-  total: number;
-  limit: number;
-  offset: number;
+// SearchAnalytics represents aggregated search analytics (matches domain.SearchAnalytics)
+export interface SearchAnalytics {
+  total_searches: number;
+  unique_users: number;
+  average_duration_ms: number;
+  average_results: number;
+  top_queries: QueryFrequency[];
+  searches_by_mode: Record<string, number>;
+  period: AnalyticsPeriod;
+}
+
+// SearchMetrics represents search performance metrics (matches domain.SearchMetrics)
+export interface SearchMetrics {
+  fast_searches: number;
+  medium_searches: number;
+  slow_searches: number;
+  p50_duration_ms: number;
+  p95_duration_ms: number;
+  p99_duration_ms: number;
+  zero_result_searches: number;
+  period: AnalyticsPeriod;
 }
 
 export interface ListSearchHistoryParams {
   limit?: number;
-  offset?: number;
 }
 
-export async function getSearchAnalytics(): Promise<SearchAnalytics> {
-  return apiFetch<SearchAnalytics>("/api/v1/admin/search/analytics");
+export async function getSearchAnalytics(period?: "24h" | "7d" | "30d"): Promise<SearchAnalytics> {
+  const params = period ? `?period=${period}` : "";
+  return apiFetch<SearchAnalytics>(`/api/v1/admin/search/analytics${params}`);
 }
 
-export async function getSearchHistory(params?: ListSearchHistoryParams): Promise<SearchHistoryResponse> {
+export async function getSearchHistory(params?: ListSearchHistoryParams): Promise<SearchQuery[]> {
   const searchParams = new URLSearchParams();
   if (params?.limit) searchParams.set("limit", params.limit.toString());
-  if (params?.offset) searchParams.set("offset", params.offset.toString());
   const query = searchParams.toString() ? `?${searchParams.toString()}` : "";
-  return apiFetch<SearchHistoryResponse>(`/api/v1/admin/search/history${query}`);
+  return apiFetch<SearchQuery[]>(`/api/v1/admin/search/history${query}`);
 }
 
-// Search Metrics types and API
-
-export interface SearchMetricPoint {
-  timestamp: string;
-  search_count: number;
-}
-
-export interface SearchMetrics {
-  points: SearchMetricPoint[];
-  total_count: number;
-  period: "hourly" | "daily";
-}
-
-export async function getSearchMetrics(period: "hourly" | "daily" = "hourly"): Promise<SearchMetrics> {
-  return apiFetch<SearchMetrics>(`/api/v1/admin/search/metrics?period=${period}`);
+export async function getSearchMetrics(period?: "24h" | "7d" | "30d"): Promise<SearchMetrics> {
+  const params = period ? `?period=${period}` : "";
+  return apiFetch<SearchMetrics>(`/api/v1/admin/search/metrics${params}`);
 }
 
 // ========== Reindex API ==========
 
-export interface ReindexResponse {
-  message: string;
-  task_id: string;
+export interface TriggerReindexRequest {
+  source_ids?: string[];
+  priority?: number;
 }
 
-export async function triggerReindex(): Promise<ReindexResponse> {
-  return apiFetch<ReindexResponse>("/api/v1/admin/reindex", {
+export interface TriggerReindexResponse {
+  task_ids: string[];
+}
+
+export async function triggerReindex(request?: TriggerReindexRequest): Promise<TriggerReindexResponse> {
+  return apiFetch<TriggerReindexResponse>("/api/v1/admin/reindex", {
     method: "POST",
-    body: JSON.stringify({ confirm: true }),
+    body: JSON.stringify(request || {}),
+  });
+}
+
+// ========== Capability Preferences API ==========
+
+// Capability represents system capability info
+export interface Capability {
+  id: string;
+  name: string;
+  phase: "indexing" | "search";
+  backend: string;
+  available: boolean;
+  health_status: "healthy" | "degraded" | "unavailable";
+  depends_on?: string;
+}
+
+// CapabilityPreferencesResponse represents per-team capability preferences
+export interface CapabilityPreferencesResponse {
+  team_id: string;
+  text_indexing_enabled: boolean;
+  embedding_indexing_enabled: boolean;
+  bm25_search_enabled: boolean;
+  vector_search_enabled: boolean;
+  updated_at: string;
+}
+
+// UpdateCapabilityPreferencesRequest for partial updates
+export interface UpdateCapabilityPreferencesRequest {
+  text_indexing_enabled?: boolean;
+  embedding_indexing_enabled?: boolean;
+  bm25_search_enabled?: boolean;
+  vector_search_enabled?: boolean;
+}
+
+export async function getCapabilityPreferences(): Promise<CapabilityPreferencesResponse> {
+  return apiFetch<CapabilityPreferencesResponse>("/api/v1/capability-preferences");
+}
+
+export async function updateCapabilityPreferences(
+  req: UpdateCapabilityPreferencesRequest
+): Promise<CapabilityPreferencesResponse> {
+  return apiFetch<CapabilityPreferencesResponse>("/api/v1/capability-preferences", {
+    method: "PUT",
+    body: JSON.stringify(req),
   });
 }
